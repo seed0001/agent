@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Assistive Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: #000;
+      color: #e0e0e0;
+      font-family: 'JetBrains Mono', monospace;
+      overflow: hidden;
+    }
+
+    .app {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    /* 3D centerpiece */
+    .centerpiece {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 200px;
+      height: 200px;
+      perspective: 600px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .orb {
+      width: 100%;
+      height: 100%;
+      position: relative;
+      transform-style: preserve-3d;
+      animation: spin3d 12s linear infinite, pulse 3s ease-in-out infinite;
+    }
+
+    .orb-inner {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      border: 2px solid rgba(100, 200, 255, 0.6);
+      border-radius: 50%;
+      transform: rotateX(75deg) rotateZ(0deg);
+      box-shadow: 0 0 40px rgba(100, 200, 255, 0.2);
+      animation: spinRing 8s linear infinite;
+    }
+
+    .orb-inner:nth-child(2) {
+      transform: rotateY(60deg) rotateX(75deg) rotateZ(0deg);
+      border-color: rgba(150, 100, 255, 0.5);
+      animation-direction: reverse;
+      animation-duration: 6s;
+    }
+
+    .orb-inner:nth-child(3) {
+      transform: rotateY(120deg) rotateX(75deg) rotateZ(0deg);
+      border-color: rgba(100, 255, 200, 0.4);
+      animation-duration: 10s;
+    }
+
+    .orb-core {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 20px;
+      height: 20px;
+      margin: -10px 0 0 -10px;
+      background: radial-gradient(circle, rgba(150, 200, 255, 0.9) 0%, rgba(80, 120, 255, 0.3) 70%);
+      border-radius: 50%;
+      box-shadow: 0 0 30px rgba(100, 180, 255, 0.6);
+      animation: pulseCore 2s ease-in-out infinite;
+    }
+
+    @keyframes spin3d {
+      from { transform: rotateY(0deg) rotateX(15deg); }
+      to { transform: rotateY(360deg) rotateX(15deg); }
+    }
+
+    @keyframes spinRing {
+      from { transform: rotateX(75deg) rotateZ(0deg); }
+      to { transform: rotateX(75deg) rotateZ(360deg); }
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: rotateY(0deg) rotateX(15deg) scale(1); }
+      50% { transform: rotateY(180deg) rotateX(15deg) scale(1.15); }
+    }
+
+    @keyframes pulseCore {
+      0%, 100% { opacity: 0.9; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.2); }
+    }
+
+    /* Messages - grow up from bottom */
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 2rem 1.5rem 1rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      gap: 1rem;
+      z-index: 1;
+    }
+
+    .msg {
+      max-width: 85%;
+      padding: 0.75rem 1rem;
+      border-radius: 12px;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      animation: fadeUp 0.3s ease;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .msg.user {
+      align-self: flex-end;
+      background: rgba(60, 60, 80, 0.8);
+      border: 1px solid rgba(100, 150, 255, 0.3);
+    }
+
+    .msg.agent {
+      align-self: flex-start;
+      background: rgba(30, 50, 80, 0.6);
+      border: 1px solid rgba(100, 200, 255, 0.2);
+      color: #c0d8ff;
+    }
+
+    /* Chat bar - fixed at bottom */
+    .chat-bar {
+      position: relative;
+      z-index: 2;
+      padding: 1rem 1.5rem 1.5rem;
+      background: linear-gradient(to top, rgba(0,0,0,0.95), transparent);
+    }
+
+    .input-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    .input-row input {
+      flex: 1;
+      background: rgba(20, 20, 30, 0.9);
+      border: 1px solid rgba(80, 100, 140, 0.5);
+      border-radius: 24px;
+      padding: 0.85rem 1.25rem;
+      color: #e0e0e0;
+      font-family: inherit;
+      font-size: 0.95rem;
+    }
+    .input-row input:focus {
+      outline: none;
+      border-color: rgba(100, 180, 255, 0.6);
+      box-shadow: 0 0 20px rgba(100, 180, 255, 0.1);
+    }
+    .input-row input::placeholder { color: #666; }
+
+    .btn {
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 500;
+      padding: 0.6rem 1rem;
+      border: none;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-send {
+      background: rgba(80, 140, 255, 0.4);
+      color: #b0d0ff;
+      border: 1px solid rgba(100, 160, 255, 0.4);
+    }
+    .btn-send:hover { background: rgba(80, 140, 255, 0.6); }
+    .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .voice-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      margin-top: 0.75rem;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+      margin-top: 0.75rem;
+    }
+
+    .btn-record {
+      background: rgba(180, 60, 60, 0.4);
+      color: #ffa0a0;
+      border: 1px solid rgba(200, 80, 80, 0.5);
+    }
+    .btn-record:hover { background: rgba(180, 60, 60, 0.6); }
+    .btn-record.recording {
+      background: rgba(200, 50, 50, 0.7);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    .btn-stop {
+      background: rgba(80, 80, 90, 0.6);
+      color: #aaa;
+    }
+    .btn-stop:hover { background: rgba(90, 90, 100, 0.7); }
+
+    .status {
+      font-size: 0.75rem;
+      color: #666;
+      margin-left: 0.5rem;
+    }
+
+    .toggles {
+      display: flex;
+      gap: 1rem;
+      margin-top: 0.5rem;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.75rem;
+      color: #666;
+    }
+    .toggle {
+      width: 32px;
+      height: 18px;
+      background: rgba(60, 60, 80, 0.8);
+      border-radius: 9px;
+      cursor: pointer;
+      position: relative;
+      transition: background 0.2s;
+    }
+    .toggle.on { background: rgba(80, 140, 255, 0.5); }
+    .toggle::after {
+      content: '';
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      background: #fff;
+      border-radius: 50%;
+      top: 2px;
+      left: 2px;
+      transition: transform 0.2s;
+    }
+    .toggle.on::after { transform: translateX(14px); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="centerpiece" aria-hidden="true">
+      <div class="orb">
+        <div class="orb-inner"></div>
+        <div class="orb-inner"></div>
+        <div class="orb-inner"></div>
+        <div class="orb-core"></div>
+      </div>
+    </div>
+
+    <div class="messages" id="messages"></div>
+
+    <div class="chat-bar">
+      <div class="input-row">
+        <input type="text" id="textInput" placeholder="Type or use voice..." autocomplete="off" />
+        <button class="btn btn-send" id="btnTypeSend">Send</button>
+      </div>
+      <div class="voice-row">
+        <button class="btn btn-record" id="btnRecord">Record</button>
+        <button class="btn btn-stop" id="btnStop" disabled>Stop</button>
+        <button class="btn btn-send" id="btnSend" disabled>Send</button>
+        <span class="status" id="status">Ready</span>
+      </div>
+      <div class="toggles">
+        <div class="toggle-row">
+          <div class="toggle on" id="toggleTTS"></div>
+          <span>Speak</span>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle on" id="toggleListen"></div>
+          <span>Listen</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const messages = document.getElementById('messages');
+    const btnRecord = document.getElementById('btnRecord');
+    const btnStop = document.getElementById('btnStop');
+    const btnSend = document.getElementById('btnSend');
+    const status = document.getElementById('status');
+    const textInput = document.getElementById('textInput');
+    const btnTypeSend = document.getElementById('btnTypeSend');
+    const toggleTTS = document.getElementById('toggleTTS');
+    const toggleListen = document.getElementById('toggleListen');
+
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let speakResponses = true;
+    let listening = true;
+
+    toggleTTS.addEventListener('click', () => {
+      speakResponses = !speakResponses;
+      toggleTTS.classList.toggle('on', speakResponses);
+    });
+    toggleListen.addEventListener('click', () => {
+      listening = !listening;
+      toggleListen.classList.toggle('on', listening);
+    });
+
+    function addToLog(role, text) {
+      const div = document.createElement('div');
+      div.className = 'msg ' + role;
+      div.textContent = (role === 'user' ? 'You: ' : '') + text;
+      messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function setStatus(s) { status.textContent = s; }
+    function setLoading(loading) {
+      btnTypeSend.disabled = loading;
+      btnSend.disabled = loading || audioChunks.length === 0;
+    }
+
+    btnRecord.addEventListener('click', async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        audioChunks = [];
+
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size) audioChunks.push(e.data); };
+        mediaRecorder.onstop = () => {
+          stream.getTracks().forEach(t => t.stop());
+          setStatus('Stopped. Click Send.');
+          btnRecord.disabled = false;
+          btnStop.disabled = true;
+          document.getElementById('btnSend').disabled = false;
+        };
+
+        mediaRecorder.start();
+        btnRecord.classList.add('recording');
+        btnRecord.disabled = true;
+        btnStop.disabled = false;
+        setStatus('Recording...');
+      } catch (err) {
+        setStatus('Mic denied');
+      }
+    });
+
+    btnStop.addEventListener('click', () => {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+        btnRecord.classList.remove('recording');
+      }
+    });
+
+    btnSend.addEventListener('click', async () => {
+      if (audioChunks.length === 0) { setStatus('No recording'); return; }
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      setStatus('Transcribing...');
+      setLoading(true);
+      try {
+        const fd = new FormData();
+        fd.append('audio', blob);
+        const r = await fetch('/api/transcribe', { method: 'POST', body: fd });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Transcription failed');
+        const text = data.text || '';
+        if (!text.trim()) { setStatus('No speech'); setLoading(false); return; }
+        addToLog('user', text);
+        setStatus('Sending...');
+        await sendToAgent(text);
+      } catch (err) {
+        setStatus('Error: ' + err.message);
+      } finally {
+        setLoading(false);
+        audioChunks = [];
+        btnSend.disabled = true;
+      }
+    });
+
+    async function sendToAgent(message) {
+      setLoading(true);
+      setStatus('Thinking...');
+      try {
+        const fd = new FormData();
+        fd.append('message', message);
+        const r = await fetch('/api/chat', { method: 'POST', body: fd });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Chat failed');
+        const response = data.response || '';
+        addToLog('agent', response);
+        setStatus('Ready');
+
+        if (speakResponses && response) {
+          setStatus('Speaking...');
+          const s = await fetch('/api/speak', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'text=' + encodeURIComponent(response)
+          });
+          const sa = await s.json();
+          if (sa.audio) {
+            const audio = new Audio(sa.audio);
+            await audio.play();
+          }
+          setStatus('Ready');
+        }
+      } catch (err) {
+        setStatus('Error: ' + err.message);
+        addToLog('agent', 'Sorry, something went wrong. ' + err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    btnTypeSend.addEventListener('click', () => {
+      const msg = textInput.value.trim();
+      if (!msg) return;
+      textInput.value = '';
+      addToLog('user', msg);
+      sendToAgent(msg);
+    });
+
+    textInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') btnTypeSend.click();
+    });
+  </script>
+</body>
+</html>
