@@ -2,6 +2,7 @@
 Notifications: Discord message alerts → desktop + web.
 Event bus for real-time notifications.
 """
+import os
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
@@ -45,7 +46,7 @@ def show_desktop_notification(title: str, message: str) -> None:
         notification.notify(
             title=title,
             message=message[:256],  # truncate for system limits
-            app_name="Assistive Agent",
+            app_name=os.environ.get("AGENT_DISPLAY_NAME", "Software Lifeform"),
             timeout=8,
         )
     except Exception:

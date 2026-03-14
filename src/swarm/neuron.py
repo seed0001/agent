@@ -29,7 +29,7 @@ async def llm_output(signals: list[Signal], prompt_prefix: str = "") -> Signal:
 
 {context}
 
-Given these signals, produce a concise, coherent response or reflection (1-3 sentences). Be natural and direct.
+Given these signals, produce a concise response (1-3 sentences). Be direct.
 """
     if prompt_prefix:
         prompt = f"{prompt_prefix}\n\n{prompt}"

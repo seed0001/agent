@@ -1,5 +1,5 @@
 """
-Cursor CLI escalation. When Doctor Mode exhausts attempts, ask Cursor CLI for help.
+Cursor CLI escalation. When Doctor Mode exhausts attempts, queries Cursor CLI for fix.
 Runs: agent -p "prompt" --output-format text
 Uses CURSOR_API_KEY from env for authentication.
 """

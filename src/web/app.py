@@ -23,17 +23,20 @@ _background_thoughts_task: asyncio.Task | None = None
 
 
 async def _background_thoughts_loop():
-    """Run autonomous background thinking + proactive outreach. Shares main process queues."""
-    import random
+    """Drive-gated background thinking: runs when connection/expression urges exceed threshold."""
     from background_thoughts import run_once
-    first = True
+
+    # Poll interval: check drives every 2 min
+    POLL_SEC = 120
     while True:
-        if not first:
-            wait = random.randint(300, 900)  # 5–15 min
-            await asyncio.sleep(wait)
-        first = False
+        await asyncio.sleep(POLL_SEC)
+        if agent is None:
+            continue
         try:
+            if not agent.biology.should_proactive():
+                continue
             await run_once()
+            agent.biology.record_proactive()
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -70,7 +73,7 @@ async def lifespan(app: FastAPI):
     agent = None
 
 
-app = FastAPI(title="Assistive Agent", lifespan=lifespan)
+app = FastAPI(title="Software Lifeform", lifespan=lifespan)
 
 # Paths
 _WEB_DIR = Path(__file__).resolve().parent
@@ -147,7 +150,7 @@ async def api_tool_queue():
 
 @app.get("/api/memory-view")
 async def api_memory_view():
-    """Return profile, episodic memories, and working memory for the knowledge viewer."""
+    """Return profile, episodic memories, working memory, and biology state."""
     if not agent:
         return JSONResponse({"error": "Agent not ready"}, status_code=503)
     m = agent.memory
@@ -156,6 +159,7 @@ async def api_memory_view():
         "episodic": m.get_episodic_view(),
         "working": m.get_working_view(),
         "thoughts": m.get_thoughts_view(),
+        "biology": agent.biology.get_view(),
     }
 
 

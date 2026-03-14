@@ -2,7 +2,7 @@
 
 ## Overview
 
-The agent has a Discord bot that receives messages, runs the agent, and sends responses. When someone messages the bot, the owner gets notified on desktop and in the web app.
+A Discord bot receives messages and sends responses. When someone messages the bot, the owner gets notified on desktop and in the web app.
 
 ## Setup
 
@@ -21,4 +21,4 @@ The agent has a Discord bot that receives messages, runs the agent, and sends re
 
 ## Proactive outreach
 
-You CAN reach out. Use `send_proactive_message(channel="discord", content="...")` to DM the owner, or `channel="web"` for in-app notification. Do this when you have a thought, reflection, or idea—especially after background thinking. Do not say you cannot reach out; you have this tool.
+Proactive: `send_proactive_message(channel="discord", content="...")` or `channel="web"`. Use when you have something concrete—observation, question, heads-up, call to action. No fluff.

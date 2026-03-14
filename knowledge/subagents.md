@@ -14,7 +14,7 @@
 **Built-in scripts (in project root):**
 - `process_monitor.py` – Logs running processes to process_log.txt. One-shot. Use: `spawn_subagent("log processes", "process_monitor.py")`
 - `conversation_prompt.py` – Runs in background, prints every 2–10 min. Use: `spawn_subagent("periodic prompts", "conversation_prompt.py")`
-- `background_thoughts.py` – Reflects on wants/needs/curiosity, writes to thoughts. Loops every 5–15 min. Use: `spawn_subagent("background thoughts", "background_thoughts.py")`. With `--once`: one thought then exit.
+- `background_thoughts.py` – Runs reflection, writes to thoughts. Loops every 5–15 min. Use: `spawn_subagent("background thoughts", "background_thoughts.py")`. With `--once`: one thought then exit.
 
 **Examples:**
 - Log processes: `spawn_subagent("log processes", "process_monitor.py")`

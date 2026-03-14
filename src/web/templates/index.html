@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0a0f1a">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>Assistive Agent</title>
+  <title>Software Lifeform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -900,7 +900,7 @@
         }
         if (profileCount === 0) {
           const id = 'p-empty';
-          nodeData[id] = { title: 'Profile', content: 'No profile facts yet. Tell the agent about yourself.' };
+          nodeData[id] = { title: 'Profile', content: 'No profile facts yet. Share about yourself.' };
           nodes.add({ id, label: 'Empty', level: 2, font: { size: 11 }, color: { background: '#2a2a3a', border: '#555' }, shape: 'box' });
           edges.add({ id: edgeId++, from: hubProfile, to: id });
         }
@@ -967,6 +967,21 @@
           nodes.add({ id, label: 'Empty', level: 2, font: { size: 11 }, color: { background: '#2a2a3a', border: '#555' }, shape: 'box' });
           edges.add({ id: edgeId++, from: hubThoughts, to: id });
         }
+
+        const bio = data.biology || {};
+        const drives = bio.drives || {};
+        const hubBio = 'hub-biology';
+        nodes.add({ id: hubBio, label: 'Drives', level: 1, font: { size: 14 }, color: { background: '#4a2a4a', border: '#8a5a8a' }, shape: 'dot', size: 22 });
+        edges.add({ id: edgeId++, from: centerId, to: hubBio });
+        ['connection', 'curiosity', 'usefulness', 'expression'].forEach((d, i) => {
+          const v = (drives[d] ?? 0).toFixed(2);
+          const id = 'b-' + i;
+          const label = d + ': ' + v;
+          const pct = Math.round((drives[d] ?? 0) * 100);
+          nodeData[id] = { title: 'Drive', content: d + ': ' + v + ' (' + pct + '%). ' + (bio.should_proactive ? 'Proactive ready.' : 'Accumulating.') };
+          nodes.add({ id, label, level: 2, font: { size: 10 }, color: { background: '#3a2a3a', border: '#6a4a6a' }, shape: 'box' });
+          edges.add({ id: edgeId++, from: hubBio, to: id });
+        });
 
         const netData = { nodes, edges };
         const opts = {

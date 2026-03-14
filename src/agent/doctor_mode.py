@@ -90,16 +90,11 @@ class DoctorMode:
         suggestions = ", ".join(strategies[:3]) if strategies else "try a different approach"
         return (
             f"{error_result}\n\n"
-            f"[Doctor Mode] This didn't work. Suggested alternatives: {suggestions}. "
-            f"Consider trying a different tool, path, or method."
+            f"[Doctor Mode] Alternatives: {suggestions}"
         )
 
     def user_facing_message(self, failure: FailureEvent, in_progress: bool = True) -> str:
-        """Simple, calm message for the user."""
+        """Message for the user."""
         if in_progress:
-            return "Something's not working the way it should. I'm trying a few different ways to fix it."
-        return (
-            "I tried a few approaches but couldn't fully fix this. "
-            "Here's what you can do next: check your connection and try again, "
-            "or let me know if you'd like to try something else."
-        )
+            return "Error. Retrying."
+        return "Couldn't fix it. Check connection or try again."

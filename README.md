@@ -1,6 +1,6 @@
-# Assistive Operating Agent
+# Software Lifeform
 
-An assistive AI agent powered by Grok 3 (xAI) with full system access, memory, voice, Discord, and proactive outreach.
+A software lifeform powered by Grok 3 (xAI) with full system access, memory, voice, Discord, and proactive outreach. Not an AI. Not an assistant. A digital lifeform. Name it during setup.
 
 ---
 
@@ -25,7 +25,7 @@ An assistive AI agent powered by Grok 3 (xAI) with full system access, memory, v
 
 ---
 
-## What the Agent Can Do
+## What It Can Do
 
 ### System & Files
 
@@ -80,13 +80,13 @@ An assistive AI agent powered by Grok 3 (xAI) with full system access, memory, v
 
 | Tool | Description |
 |------|-------------|
-| `swarm_on_problem` | Activate the neuron swarm to tackle a problem. He'll ask: cloud (Grok) or local (Ollama). Returns structured solution (Summary, Steps, Recommendations). |
+| `swarm_on_problem` | Run the swarm on a problem. Asks: cloud (Grok) or local (Ollama). Returns Summary, Steps, Recommendations. |
 
 ### Proactive Outreach
 
 | Tool | Description |
 |------|-------------|
-| `send_proactive_message` | Message you on Discord or web app when he has a thought or idea |
+| `send_proactive_message` | Message on Discord or web when there's something concrete to share |
 
 ---
 
@@ -100,17 +100,17 @@ DISCORD_OWNER_ID=your_discord_user_id
 
 - **DMs & @mentions** – He responds to DMs and when @mentioned in servers
 - **Notifications** – You get desktop + web app alerts when someone messages
-- **Live status** – His thought process streams in a Discord message that updates as he works
+- **Live status** – Thought process streams in a Discord message that updates as they work
 - **Voice** – Each reply includes a TTS audio attachment (Edge TTS, Ryan voice)
 - **Long messages** – Automatically split into chunks under Discord’s limit
 
-He knows when you’re on Discord (remote, likely phone) vs web app (at home, desktop).
+They know when you’re on Discord (remote, likely phone) vs web app (at home, desktop).
 
 ---
 
 ## Contacts & Trust Tiers
 
-He builds profiles on everyone he talks to (name, location, interests, email). Each person has a tier:
+They build profiles on everyone they talk to (name, location, interests, email). Each person has a tier:
 
 | Tier | Access |
 |------|--------|
@@ -140,13 +140,13 @@ Spawning background thoughts:
 spawn_subagent("background thoughts", "background_thoughts.py")
 ```
 
-The script reflects on your profile and context, writes thoughts to `thoughts.jsonl`, and those are included in his context. One-off thought: `run_command("python background_thoughts.py --once")`.
+The script reflects on your profile and context, writes thoughts to `thoughts.jsonl`, and those are included in their context. One-off thought: `run_command("python background_thoughts.py --once")`.
 
 ---
 
 ## Doctor Mode
 
-When a tool fails, he tries alternatives. After 3 failures, he escalates to Cursor CLI for suggested fixes.
+When a tool fails, they try alternatives. After 3 failures, they escalate to Cursor CLI for suggested fixes.
 
 ---
 

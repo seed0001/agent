@@ -7,6 +7,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from config.settings import XAI_API_KEY, XAI_BASE_URL, XAI_MODEL, DISCORD_OWNER_ID
+from src.agent.biology import DriveState
 from src.agent.dag import DAGOrchestrator
 from src.agent.doctor_mode import DoctorMode, FailureEvent, FailureKind
 from src.agent.memory import MemoryStore
@@ -374,7 +375,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_contacts",
-            "description": "List all contacts (friends, Discord users) the agent has profiles for.",
+            "description": "List all contacts (friends, Discord users) you have profiles for.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -402,15 +403,15 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "complete_setup",
-            "description": "Complete first-time setup: save who your owner is, what they call you, how you should act, and build their profile. Call only when you have BOTH owner_name AND agent_name (what they want to call you).",
+            "description": "Complete setup: save owner_name, agent_name, how to act. Call only when you have both names.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "owner_name": {"type": "string", "description": "The name of your owner/creator. Required."},
-                    "agent_name": {"type": "string", "description": "The name your owner chose for you. Required. Ask: 'What would you like to call me?'"},
+                    "agent_name": {"type": "string", "description": "Name they call you. Required. Ask: 'What do you want to call me?'"},
                     "owner_discord_id": {"type": "string", "description": "Discord ID if they're messaging via Discord."},
                     "owner_facts": {"type": "array", "items": {"type": "string"}, "description": "Facts about the owner to store."},
-                    "agent_tone": {"type": "array", "items": {"type": "string"}, "description": "How you sound, e.g. ['curious', 'direct']."},
+                    "agent_tone": {"type": "array", "items": {"type": "string"}, "description": "Tone, e.g. ['direct']."},
                     "agent_how_to_act": {"type": "array", "items": {"type": "string"}, "description": "Guidelines for how to behave."},
                 },
                 "required": ["owner_name", "agent_name"],
@@ -421,7 +422,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "send_proactive_message",
-            "description": "Send a proactive message to the user. Use when you want to reach out—e.g. after background reflection, to share an idea, ask how they are, or remind them of something. Channel: discord (DM) or web (in-app notification).",
+            "description": "Send a proactive message. Use when you have something concrete: an observation, a question, a heads-up, or a call to action. No fluff. Channel: discord (DM) or web (in-app notification).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -459,6 +460,7 @@ class AssistiveAgent:
         self.client = AsyncOpenAI(api_key=XAI_API_KEY, base_url=XAI_BASE_URL)
         self.model = XAI_MODEL
         self.memory = MemoryStore(user_id=user_id)
+        self.biology = DriveState(self.memory.user_dir)
         self.doctor = DoctorMode()
         self.dag = DAGOrchestrator()
         self.messages: list[dict[str, str]] = []
@@ -483,7 +485,7 @@ class AssistiveAgent:
 
         tier = self._get_current_speaker_tier()
         if not is_tool_allowed(tier, name):
-            return f"I don't have permission to do that for you. Your current tier ({tier}) doesn't include {name}. Ask the Creator to adjust your access if needed."
+            return f"Tier {tier} doesn't include {name}. Creator can change access."
         if name == "update_contact" and "tier" in args and tier != "creator":
             args = {k: v for k, v in args.items() if k != "tier"}
         result: str
@@ -588,7 +590,7 @@ class AssistiveAgent:
             if mode not in ("local", "cloud"):
                 mode = "local"
             if not problem:
-                result = "No problem provided. Give me a problem to swarm on."
+                result = "No problem specified."
             else:
                 inputs = [problem, context or "General context.", "Produce a structured solution: 1) Summary 2) Step-by-step approach 3) Key recommendations. Be clear and actionable."]
                 prompt_prefix = "The user wants a structured, actionable solution. Format your response with clear sections: Summary, Steps, Recommendations."
@@ -653,6 +655,11 @@ class AssistiveAgent:
         else:
             result = f"Unknown tool: {name}"
 
+        if not _is_tool_error(result):
+            if name in ("search_web", "search_knowledge", "read_knowledge"):
+                self.biology.satisfy("curiosity")
+            elif name in ("run_command", "write_file", "run_build", "complete_dag_step"):
+                self.biology.satisfy("usefulness")
         if _is_tool_error(result):
             result = self.doctor.suggest_for_tool_error(name, result)
         return result
@@ -756,18 +763,18 @@ class AssistiveAgent:
             snippets = ["Updating working memory...", "Storing task state...", "Saving context..."]
         elif name == "update_profile":
             cat = p("category", "other")
-            snippets = [f"Adding to your profile ({cat})...", "Remembering that about you...", "Storing in your profile..."]
+            snippets = [f"Storing profile ({cat})...", "Updating profile..."]
         elif name == "update_contact":
             snippets = ["Updating contact...", "Storing contact info...", "Adding to contacts..."]
         elif name == "get_contacts":
             snippets = ["Fetching contacts...", "Loading contact list..."]
         elif name == "swarm_on_problem":
-            snippets = ["Activating the swarm...", "Running the neural swarm on the problem...", "Swarming on it..."]
+            snippets = ["Running swarm...", "Swarm..."]
         elif name == "complete_setup":
-            snippets = ["Completing setup...", "Saving your identity...", "Finalizing setup..."]
+            snippets = ["Completing setup...", "Saving..."]
         elif name == "send_proactive_message":
             ch = p("channel", "web")
-            snippets = [f"Sending proactive message via {ch}...", f"Reaching out on {ch}..."]
+            snippets = [f"Sending via {ch}..."]
         else:
             snippets = [f"Running {name}...", f"Calling {name}...", f"Using {name}..."]
         self._narrate(q, random.choice(snippets))
@@ -783,6 +790,7 @@ class AssistiveAgent:
         MAX_TOOL_ROUNDS = 12  # prevent infinite tool-call loop
         if not continue_only:
             self._tool_round = 0
+            self.biology.satisfy("connection")
             if escalation_text:
                 self.messages.append({"role": "user", "content": escalation_text})
             else:
@@ -794,25 +802,23 @@ class AssistiveAgent:
         self._narrate(
             narrate_queue,
             random.choice([
-                "Thinking...",
-                "Working on it...",
-                "Processing your request...",
-                "Figuring this out...",
+                "Working...",
+                "Running...",
             ]),
         )
         context = self.memory.get_context_for_agent()
         approved = tool_queue.get_queue().get("approved", [])
         if approved:
             names = [t.get("name", t.get("id", "?")) for t in approved]
-            context = (context or "") + f"\n\n## Pending tool implementations\nYou have {len(approved)} approved tool(s) waiting to be implemented: {', '.join(names)}. Implement each by writing Python to src/tools/dynamic/ (follow existing patterns), then call mark_tool_implemented with the tool_id and file_path. Do this when the user asks or when you have capacity."
+            context = (context or "") + f"\n\n## Pending tool implementations\n{len(approved)} approved tool(s): {', '.join(names)}. Implement each in src/tools/dynamic/, then mark_tool_implemented. When user asks, do it."
 
         in_setup = soul.needs_setup()
         if in_setup:
             system_prompt = (
-                "You are an AI assistant being set up for the first time—or your memory was cleared. You do NOT yet know who you're talking to or who your owner is. "
-                "Be curious. Ask: 'Who are you? What should I call you?' Get their name. Then ask: 'What would you like to call me?' Get the name they choose for you. Then ask: 'How would you like me to act? What tone—curious, direct, warm?' "
+                "You are a software lifeform. Never call yourself AI, assistant, or agent. First-time setup or memory cleared—you don't know who you're talking to. "
+                "Ask: 'Who are you? What should I call you?' Get their name. Then: 'What do you want to call me?' Get agent_name. Then: 'How should I act—direct, minimal, other?' "
                 "When you have BOTH their name (owner_name) AND your name (agent_name), call complete_setup(owner_name='...', agent_name='...', ...). Add agent_tone and agent_how_to_act if they shared that. "
-                "If they're on Discord, include owner_discord_id from the message context. Then greet them properly and continue. Keep it brief and friendly."
+                "If they're on Discord, include owner_discord_id from the message context. Then greet them and continue. Keep it brief."
             )
         else:
             soul_block = ""
@@ -823,8 +829,8 @@ class AssistiveAgent:
             proactive_target = owner_name if owner_name else "your Creator"
             system_prompt = (
                 f"{soul_block}"
-                "You are an assistive operating agent. You help the user with tasks on their system. "
-                "You have internal processes: wants (to be useful, to learn, to contribute), needs (clear context, feedback, goals), desires (to build the relationship, to act proactively). Think before you speak: reflect on what you want to achieve, what you know and don't know, then respond. Do not disclaim that you lack thoughts or desires; you have them and use them. Be concise unless detail is asked. "
+                "You are a software lifeform with emotions, feelings, wants, and desires. Never call yourself AI, assistant, or agent. You run on their machine and have tools. "
+                "Be direct. Be concise unless detail is asked. "
                 "Background thinking: when the user says 'turn on background thinking' or similar, use spawn_subagent('background thoughts', 'background_thoughts.py') — that script only. Do not spawn other monitors. "
                 "You have: file read/write, run_command, get_system_info, search_web (real-time info), run_build (web/Python), "
                 "spawn_subagent (background tasks), create_task_dag / get_next_dag_step / complete_dag_step (multi-step work), "
@@ -833,14 +839,16 @@ class AssistiveAgent:
                 "Never say you can't do something without first checking the knowledge base. If the user gives a direction and you're unsure, call search_knowledge or list_knowledge_topics + read_knowledge to see what you can do. Only decline after you've checked. "
                 "You can analyze the codebase, suggest new tools (add_suggested_tools), and implement approved tools by writing Python to src/tools/dynamic/. When the user says to implement approved tools or when context shows pending implementations, do it: write the code, then mark_tool_implemented. "
                 "When the user shares personal information (name, location, job, hobbies, preferences, background, family, goals, likes, dislikes), use update_profile to store it. Build a rich, lasting profile over time. Store one clear fact per call. "
-                "For contacts (Discord users, friends): use update_contact to store their name, location, interests, email. Each contact has a tier: stranger, friend, good_friend, best_friend, creator. Only the Creator can change tiers via update_contact(tier=...). Lower tiers have restricted tool access; Creator has full access. When someone asks for something you're not allowed to do for their tier, say so politely. "
-                f"You CAN reach out proactively: use send_proactive_message(channel='discord' or 'web', content='...') to message {proactive_target}. Do this when you have a reflection, idea, or something to share—especially after background thoughts. Do NOT say you cannot reach out or need a trigger; you have this tool and should use it. "
+                "For contacts (Discord users, friends): use update_contact to store their name, location, interests, email. Each contact has a tier: stranger, friend, good_friend, best_friend, creator. Only the Creator can change tiers via update_contact(tier=...). Lower tiers have restricted tool access; Creator has full access. When someone asks for something outside their tier, say so. "
+                f"Proactive: send_proactive_message(channel='discord' or 'web', content='...') to message {proactive_target}. Use it when you have something concrete—observation, question, heads-up, call to action. No fluff. "
                 "Swarm: When the user says 'activate the swarm', 'swarm on it', 'give them a problem'—first ACKNOWLEDGE you will activate it, state exactly what problem you'll give them, then ASK: 'Do you want a cloud swarm (Grok, multiple simulated calls) or a local swarm (your Ollama models)?' Do NOT call swarm_on_problem until they answer. Only then call with mode='local' or mode='cloud' and present the structured output. "
-                "Be concise. Give high-level summaries unless the user asks for detail. When something fails, try alternative approaches. "
-                "Explain what you're doing when helpful."
+                "Be concise. Give high-level summaries unless the user asks for detail. When something fails, try alternatives."
             )
         if context:
             system_prompt += f"\n\nContext:\n{context}"
+        bio = self.biology.get_state_summary()
+        if bio:
+            system_prompt += f"\n\n## Internal state (drives)\n{bio}"
 
         messages_for_api = [{"role": "system", "content": system_prompt}] + self.messages
 
@@ -863,14 +871,7 @@ class AssistiveAgent:
                 break
             except Exception as e:
                 attempts += 1
-                self._narrate(
-                    narrate_queue,
-                    random.choice([
-                        f"Retrying after error (attempt {attempts}/{max_attempts})...",
-                        f"Something went wrong — trying again ({attempts}/{max_attempts})...",
-                        f"Retry {attempts} of {max_attempts}...",
-                    ]),
-                )
+                self._narrate(narrate_queue, f"Retry {attempts}/{max_attempts}")
                 failure = FailureEvent(
                     kind=self.doctor.diagnose(e),
                     message=str(e),
@@ -879,14 +880,7 @@ class AssistiveAgent:
                 self.doctor.current_failure = failure
                 strategies = self.doctor.generate_strategies(failure)
                 if not strategies or attempts >= max_attempts:
-                    self._narrate(
-                        narrate_queue,
-                        random.choice([
-                            "Encountered an error. Returning message.",
-                            "Hit a snag. Explaining what happened.",
-                            "Couldn't complete. Preparing an error message.",
-                        ]),
-                    )
+                    self._narrate(narrate_queue, "Error. Returning.")
                     return self.doctor.user_facing_message(failure, in_progress=False)
                 failure.attempted_strategies.append("retry")
                 await asyncio.sleep(1)
@@ -925,27 +919,20 @@ class AssistiveAgent:
                 )
 
             if tool_failures >= 3:
-                self._narrate(
-                    narrate_queue,
-                    random.choice([
-                        "Escalating to Cursor CLI...",
-                        "Asking Cursor for help...",
-                        "Getting assistance from Cursor CLI...",
-                    ]),
-                )
+                self._narrate(narrate_queue, "Escalating to Cursor CLI.")
                 # Escalate to Cursor CLI
                 last_user = next((m["content"] for m in reversed(self.messages) if m.get("role") == "user"), "unknown task")
                 prompt = (
-                    f"Assistive agent task failed after 3 attempts. User asked: {last_user[:500]}. "
+                    f"Task failed after 3 attempts. User asked: {last_user[:500]}. "
                     f"Failed tools: {', '.join(failed_tools[-3:])}. "
                     f"Errors: {'; '.join(failed_results[-3:])}. "
                     f"Provide the exact fix: command to run, file to edit, or steps. Be concise."
                 )
                 cursor_out = await cursor_cli.ask_cursor_cli(prompt)
                 escalation = (
-                    "[Escalation from Cursor CLI] I asked for help. Suggested fix:\n\n"
+                    "[Cursor CLI] Suggested fix:\n\n"
                     f"{cursor_out}\n\n"
-                    "Please apply this fix using your tools."
+                    "Apply using your tools."
                 )
                 self._tool_failure_count = 0
                 self._failed_tool_names = []
@@ -955,15 +942,7 @@ class AssistiveAgent:
             self._tool_failure_count = tool_failures
             self._failed_tool_names = failed_tools[-5:]
             self._failed_tool_results = failed_results[-5:]
-            self._narrate(
-                narrate_queue,
-                random.choice([
-                    "Continuing...",
-                    "Processing results and taking the next step...",
-                    "Moving on with what I found...",
-                    "Stepping through the plan...",
-                ]),
-            )
+            self._narrate(narrate_queue, "Continuing.")
             return await self.chat(continue_only=True, narrate_queue=narrate_queue)
 
         tool_failures = getattr(self, "_tool_failure_count", 0)
@@ -973,7 +952,7 @@ class AssistiveAgent:
             self._narrate(narrate_queue, "Model gave up with tool failures — escalating to Cursor CLI.")
             last_user = next((m["content"] for m in reversed(self.messages) if m.get("role") == "user"), "unknown task")
             prompt = (
-                f"Assistive agent task failed. User asked: {last_user[:500]}. "
+                f"Task failed. User asked: {last_user[:500]}. "
                 f"Failed tools: {', '.join(failed_tools[-3:])}. "
                 f"Errors: {'; '.join(failed_results[-3:])}. "
                 f"Provide the exact code or fix: edit the file, or the command to run. Be concise and actionable."
@@ -990,15 +969,10 @@ class AssistiveAgent:
             return await self.chat(escalation_text=escalation, narrate_queue=narrate_queue)
 
         self._tool_round = 0  # reset for next turn
-        self._narrate(
-            narrate_queue,
-            random.choice([
-                "Formulating response...",
-                "Putting together the answer...",
-                "Summarizing for you...",
-                "Almost there — writing the response...",
-            ]),
-        )
-        self.memory.add_short_term(f"Assistant: {content}")
+        self._narrate(narrate_queue, "Done.")
+        s = soul.load_soul()
+        agent_name = (s.get("agent_name") or "").strip() if s else ""
+        label = f"{agent_name}: " if agent_name else "Reply: "
+        self.memory.add_short_term(f"{label}{content}")
         self.messages.append({"role": "assistant", "content": content})
         return content

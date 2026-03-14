@@ -110,7 +110,7 @@ async def run_cloud(
         r = await client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "You are one neuron in a swarm. Give a brief, focused analysis."},
+                {"role": "system", "content": "You are one neuron in a swarm. Brief analysis. 2-4 sentences."},
                 {"role": "user", "content": f"Problem: {problem}\nContext: {context or 'None'}\n\n{prompt}\n\nRespond in 2-4 sentences."},
             ],
         )
@@ -125,7 +125,7 @@ async def run_cloud(
 2. Practical: {results[1]}
 3. Risk: {results[2]}
 
-Synthesize into a structured solution with: 1) Summary 2) Step-by-step approach 3) Key recommendations. Be clear and actionable.
+Synthesize into: 1) Summary 2) Step-by-step approach 3) Recommendations. Be direct.
 """
     if prompt_prefix:
         synthesis_prompt = f"{prompt_prefix}\n\n{synthesis_prompt}"
@@ -133,7 +133,7 @@ Synthesize into a structured solution with: 1) Summary 2) Step-by-step approach 
     r = await client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": "You synthesize swarm outputs into a clear, structured solution."},
+            {"role": "system", "content": "Synthesize into structured solution: Summary, Steps, Recommendations."},
             {"role": "user", "content": synthesis_prompt},
         ],
     )

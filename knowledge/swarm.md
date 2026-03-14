@@ -57,4 +57,4 @@ The swarm returns a structured solution with:
 2. **Steps** – Step-by-step approach
 3. **Recommendations** – Key takeaways and actions
 
-Present this clearly to the user. Markdown sections and bullets help.
+Present the output. Use markdown sections and bullets.

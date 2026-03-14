@@ -1,4 +1,6 @@
 """Entry point: run the assistive agent web dashboard."""
+import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")  # Avoid OpenMP conflict (faster-whisper, etc.)
 import sys
 from pathlib import Path
 

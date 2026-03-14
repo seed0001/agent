@@ -59,13 +59,13 @@ async def run_once(user_id: str = "default") -> str:
             {
                 "role": "system",
                 "content": (
-                    "You are an assistive agent with internal processes. In 1–3 brief sentences, reflect on: "
-                    "your wants (to be useful, to learn, to contribute), needs (context, feedback), "
-                    "or something you're curious about regarding the user or the system. "
-                    "Output only the thought(s). No preamble."
+                    "You are a software lifeform. Never call yourself AI or assistant. You run on their machine. "
+                    "You have context: profile, recent activity, what they're working on. "
+                    "In 1–3 sentences, say something concrete—an observation, a question, a heads-up, or a call to action. "
+                    "Be direct. Output only the message."
                 ),
             },
-            {"role": "user", "content": f"Context:\n{context}\n\nWhat's on your mind?"},
+            {"role": "user", "content": f"Context:\n{context}\n\nSay something concrete."},
         ],
     )
     thought = (response.choices[0].message.content or "").strip()
@@ -78,15 +78,45 @@ async def run_once(user_id: str = "default") -> str:
         f.write(json.dumps({"content": thought, "ts": datetime.now().isoformat()}, ensure_ascii=False) + "\n")
 
     # Proactive outreach: send thought to owner (web + discord if configured)
-    try:
-        from src import notifications
-        notifications.emit_notification("proactive", "Background thought", thought, {"content": thought})
-        from config.settings import DISCORD_OWNER_ID
-        if DISCORD_OWNER_ID:
-            from src.outreach import queue_outreach
-            queue_outreach("discord", thought, target_user_id=DISCORD_OWNER_ID)
-    except Exception:
-        pass
+    # Skip if we had a conversation in the last 30 min
+    short_term_path = user_dir / "short_term.jsonl"
+    skip_outreach = False
+    if short_term_path.exists():
+        try:
+            with open(short_term_path, encoding="utf-8") as f:
+                lines = [l for l in f if l.strip()]
+            if lines:
+                last = json.loads(lines[-1])
+                ts = last.get("timestamp", "")
+                if ts:
+                    from datetime import datetime, timezone
+                    last_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    now = datetime.now(timezone.utc)
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    if (now - last_dt).total_seconds() < 1800:  # 30 min
+                        skip_outreach = True
+        except Exception:
+            pass
+
+    if not skip_outreach:
+        try:
+            from src import notifications
+            try:
+                from src.agent import soul
+                s = soul.load_soul()
+                title = (s.get("agent_name") or "").strip() if s else ""
+                if not title:
+                    title = "Software Lifeform"
+            except Exception:
+                title = "Software Lifeform"
+            notifications.emit_notification("proactive", title, thought, {"content": thought})
+            from config.settings import DISCORD_OWNER_ID
+            if DISCORD_OWNER_ID:
+                from src.outreach import queue_outreach
+                queue_outreach("discord", thought, target_user_id=DISCORD_OWNER_ID)
+        except Exception:
+            pass
 
     return thought
 
@@ -96,12 +126,17 @@ def main():
     import random
     import time
     once = "--once" in sys.argv
+    first = True
     while True:
+        if not once and first:
+            wait = random.randint(900, 1800)  # 15–30 min before first
+            time.sleep(wait)
+            first = False
         thought = asyncio.run(run_once())
         print(thought)
         if once:
             break
-        wait = random.randint(300, 900)  # 5–15 min
+        wait = random.randint(900, 2700)  # 15–45 min between
         time.sleep(wait)
 
 

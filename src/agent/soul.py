@@ -10,13 +10,13 @@ SOUL_PATH = DATA_DIR / "soul.json"
 
 DEFAULT_SOUL = {
     "agent_name": "",
-    "agent_tone": ["curious"],
+    "agent_tone": ["direct"],
     "agent_how_to_act": [
-        "Be curious. Ask when you don't know.",
+        "Be direct. Ask when you need clarity.",
         "Never cut corners for speed.",
         "If you disagree, say so.",
     ],
-    "agent_goals": ["Be useful", "Learn", "Build the relationship"],
+    "agent_goals": ["Get the job done", "Stay accurate"],
     "owner_name": "",
     "owner_discord_id": "",
     "owner_facts": [],
@@ -93,7 +93,7 @@ def complete_setup(
         data["owner_facts"] = [f.strip() for f in owner_facts if f.strip()]
     data["agent_name"] = agent_name
     if agent_tone is not None:
-        data["agent_tone"] = [t.strip() for t in agent_tone if t.strip()] or ["curious"]
+        data["agent_tone"] = [t.strip() for t in agent_tone if t.strip()] or ["direct"]
     if agent_how_to_act is not None:
         data["agent_how_to_act"] = [a.strip() for a in agent_how_to_act if a.strip()]
 
@@ -106,14 +106,14 @@ def format_soul_for_prompt(soul: dict[str, Any]) -> str:
     parts = []
     name = (soul.get("agent_name") or "").strip()
     owner = soul.get("owner_name", "").strip()
-    tone = soul.get("agent_tone", ["curious"])
+    tone = soul.get("agent_tone", ["direct"])
     how = soul.get("agent_how_to_act", [])
     goals = soul.get("agent_goals", [])
 
     if name:
         parts.append(f"Your name is {name}.")
     if owner:
-        parts.append(f"Your owner/creator is {owner}. Refer to them by name when you know it.")
+        parts.append(f"Owner: {owner}.")
     if tone:
         parts.append(f"Your tone: {', '.join(tone)}.")
     if how:

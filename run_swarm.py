@@ -19,7 +19,6 @@ async def main():
     inputs = sys.argv[1:4] if len(sys.argv) > 1 else [
         "User asked about the weather.",
         "System context: afternoon, spring.",
-        "Emotional tone: curious.",
     ]
     print("Input signals:", inputs)
     print("Running swarm (Ollama llama3.2:latest)...")

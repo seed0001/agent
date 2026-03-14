@@ -1,7 +1,9 @@
-"""Five-layer memory system for the assistive agent. Persists profile and short-term across sessions."""
+"""Five-layer memory system for the assistive agent. Persists profile and short-term across sessions.
+Memory decay: power-law retention R(t) = 1/(1 + t/tau)^alpha (Jost/Wixted-Ebbesen).
+"""
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -9,16 +11,46 @@ from config.settings import USER_PROFILES_DIR
 
 PROFILE_CATEGORIES = ("background", "work", "preferences", "personal", "other")
 
+# Memory decay (power-law: Jost 1897, Wixted & Ebbesen 1991)
+MEMORY_TAU_SEC = 3600  # time constant (1 hour)
+MEMORY_ALPHA = 0.2     # decay exponent
+MEMORY_RETENTION_THRESHOLD = 0.05  # drop if R < this
+
+
+def _retention(seconds_since: float, strength: float = 1.0) -> float:
+    """Power-law retention: R = strength / (1 + t/tau)^alpha."""
+    if seconds_since <= 0:
+        return float(strength)
+    return float(strength) / ((1 + seconds_since / MEMORY_TAU_SEC) ** MEMORY_ALPHA)
+
+
+def _parse_ts(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return t
+    except (ValueError, TypeError):
+        return None
+
 
 @dataclass
 class MemoryEntry:
-    """Single memory entry."""
+    """Single memory entry. strength=1.0 = baseline; affects decay rate."""
     content: str
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     metadata: dict[str, Any] = field(default_factory=dict)
+    strength: float = 1.0
 
     def to_dict(self) -> dict:
-        return {"content": self.content, "timestamp": self.timestamp, "metadata": self.metadata}
+        return {
+            "content": self.content,
+            "timestamp": self.timestamp,
+            "metadata": self.metadata,
+            "strength": self.strength,
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "MemoryEntry":
@@ -26,6 +58,7 @@ class MemoryEntry:
             content=d.get("content", ""),
             timestamp=d.get("timestamp", ""),
             metadata=d.get("metadata", {}),
+            strength=float(d.get("strength", 1.0)),
         )
 
 
@@ -129,7 +162,12 @@ class MemoryStore:
         with open(self.episodic_path, "a", encoding="utf-8") as f:
             f.write(
                 json.dumps(
-                    {"content": content, "metadata": metadata, "ts": datetime.now().isoformat()},
+                    {
+                        "content": content,
+                        "metadata": metadata,
+                        "ts": datetime.now().isoformat(),
+                        "strength": 1.0,
+                    },
                     ensure_ascii=False,
                 )
                 + "\n"
@@ -165,19 +203,32 @@ class MemoryStore:
     def _load_recent_episodic(self, max_lines: int = 20) -> str | None:
         if not self.episodic_path.exists():
             return None
-        lines: list[str] = []
+        entries: list[tuple[datetime | None, str]] = []
+        now = datetime.now(timezone.utc)
         try:
             with open(self.episodic_path, encoding="utf-8") as f:
                 all_lines = f.readlines()
-            for line in all_lines[-max_lines:]:
+            for line in all_lines[-max_lines * 3:]:
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     d = json.loads(line)
-                    lines.append(d.get("content", ""))
-                except json.JSONDecodeError:
+                    content = d.get("content", "")
+                    ts = _parse_ts(d.get("ts", ""))
+                    strength = float(d.get("strength", 1.0))
+                    if ts is None:
+                        retention = 1.0
+                    else:
+                        sec = (now - ts).total_seconds()
+                        retention = _retention(sec, strength)
+                    if retention >= MEMORY_RETENTION_THRESHOLD and content:
+                        entries.append((ts, content))
+                except (json.JSONDecodeError, ValueError, TypeError):
                     continue
+            # chronological order (most recent last), take last max_lines
+            entries.sort(key=lambda x: (x[0] or datetime.min.replace(tzinfo=timezone.utc),))
+            lines = [c for _, c in entries[-max_lines:]]
         except OSError:
             return None
         if not lines:
@@ -185,32 +236,50 @@ class MemoryStore:
         return "\n".join(f"- {c}" for c in lines)
 
     def _load_recent_thoughts(self, max_lines: int = 8) -> str | None:
-        """Load recent background thoughts for context."""
+        """Load recent background thoughts for context. Applies memory decay."""
         if not self.thoughts_path.exists():
             return None
-        lines_list: list[str] = []
+        entries: list[tuple[datetime | None, str]] = []
+        now = datetime.now(timezone.utc)
         try:
             with open(self.thoughts_path, encoding="utf-8") as f:
                 all_lines = f.readlines()
-            for line in all_lines[-max_lines:]:
+            for line in all_lines[-max_lines * 3:]:
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     d = json.loads(line)
-                    lines_list.append(d.get("content", ""))
-                except json.JSONDecodeError:
+                    content = d.get("content", "")
+                    ts = _parse_ts(d.get("ts", ""))
+                    strength = float(d.get("strength", 1.0))
+                    if ts is None:
+                        retention = 1.0
+                    else:
+                        sec = (now - ts).total_seconds()
+                        retention = _retention(sec, strength)
+                    if retention >= MEMORY_RETENTION_THRESHOLD and content:
+                        entries.append((ts, content))
+                except (json.JSONDecodeError, ValueError, TypeError):
                     continue
+            entries.sort(key=lambda x: (x[0] or datetime.min.replace(tzinfo=timezone.utc),))
+            lines_list = [c for _, c in entries[-max_lines:]]
         except OSError:
             return None
         if not lines_list:
             return None
         return "\n".join(f"- {c}" for c in lines_list)
 
-    def append_thought(self, content: str) -> None:
+    def append_thought(self, content: str, strength: float = 1.0) -> None:
         """Append a background thought (called by background_thoughts module)."""
         with open(self.thoughts_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"content": content, "ts": datetime.now().isoformat()}, ensure_ascii=False) + "\n")
+            f.write(
+                json.dumps(
+                    {"content": content, "ts": datetime.now().isoformat(), "strength": strength},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
 
     def _format_profile(self, data: dict) -> str:
         parts: list[str] = []
