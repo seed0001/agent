@@ -3,6 +3,7 @@
 Use `search_knowledge(query)` to find how-tos, or `read_knowledge(topic)` to read a specific guide.
 
 **Topics:**
+- recent_updates – bullet-point changelog of recent changes and current capabilities
 - how_i_work – full architecture: inputs, memory, biology, tools, output. Use when someone asks how you work or why you do something.
 - biology – drives (connection, curiosity, usefulness, expression), memory decay, satisfaction events
 - self_model – proactive outreach (send_proactive_message), background thoughts
@@ -12,7 +13,8 @@ Use `search_knowledge(query)` to find how-tos, or `read_knowledge(topic)` to rea
 - commands – run_command
 - search – search_web
 - build – run_build (web, Python)
-- subagents – spawn_subagent, subagent_status (includes process_monitor, conversation_prompt)
+- subagents – spawn_subagent, subagent_status (includes process_monitor, transformer_research, generate_training_data)
+- training_data – generate instruction fine-tuning data locally via Ollama (scripts/generate_training_data.py)
 - dag – create_task_dag, multi-step orchestration
 - memory – set_working_memory
 - system – get_system_info

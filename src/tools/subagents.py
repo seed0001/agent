@@ -79,6 +79,15 @@ class SubAgentManager:
             return "No sub-agents running"
         return "\n".join(f"{a.id}: {a.task} - {a.status}" for a in self.agents.values())
 
+    def get_output(self, aid: str) -> str:
+        """Get captured stdout/stderr from a completed sub-agent."""
+        a = self.agents.get(aid)
+        if not a:
+            return f"Unknown agent: {aid}"
+        if not a.output:
+            return f"{a.id}: no output captured (status={a.status})"
+        return "\n".join(a.output)
+
     def stop_all(self) -> int:
         """Terminate all running sub-agents. Returns count stopped."""
         stopped = 0

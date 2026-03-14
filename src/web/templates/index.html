@@ -340,8 +340,15 @@
 
     .toggles {
       display: flex;
+      flex-wrap: wrap;
       gap: 1rem;
       margin-top: 0.5rem;
+    }
+    .toggles-break {
+      flex-basis: 100%;
+      width: 0;
+      height: 0;
+      overflow: hidden;
     }
     .toggle-row {
       display: flex;
@@ -440,7 +447,7 @@
       cursor: pointer;
     }
 
-    .memory-toggle {
+    .memory-toggle, .metrics-toggle {
       font-size: 0.75rem;
       color: #666;
       cursor: pointer;
@@ -448,7 +455,116 @@
       margin-left: 1rem;
       text-decoration: underline;
     }
-    .memory-toggle:hover { color: #999; }
+    .memory-toggle:hover, .metrics-toggle:hover { color: #999; }
+
+    .metrics-panel {
+      display: none;
+      background: rgba(10, 15, 25, 0.95);
+      border: 1px solid rgba(80, 120, 180, 0.3);
+      border-radius: 8px;
+      padding: 1rem 1.5rem;
+      margin: 0 1.5rem 1rem;
+      max-height: 320px;
+      overflow-y: auto;
+      z-index: 3;
+    }
+    .metrics-panel.open { display: block; }
+    .metrics-panel h4 {
+      font-size: 0.85rem;
+      color: #a0c0ff;
+      margin: 1rem 0 0.5rem;
+    }
+    .metrics-panel h4:first-child { margin-top: 0; }
+    .metric-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+    .metric-row label { min-width: 100px; font-size: 0.8rem; color: #a0c8ff; }
+    .metric-bar-wrap {
+      flex: 1;
+      height: 12px;
+      background: rgba(20, 40, 60, 0.8);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .metric-bar {
+      height: 100%;
+      border-radius: 6px;
+      background: linear-gradient(90deg, rgba(80, 140, 255, 0.6), rgba(120, 180, 255, 0.8));
+      transition: width 0.3s ease;
+    }
+    .metric-bar.high { background: linear-gradient(90deg, rgba(255, 160, 80, 0.6), rgba(255, 180, 100, 0.8)); }
+    .metric-value { font-size: 0.75rem; color: #888; min-width: 3rem; }
+
+    .settings-gear {
+      width: 24px;
+      height: 24px;
+      padding: 0.25rem;
+      margin-left: 0.5rem;
+      cursor: pointer;
+      opacity: 0.6;
+      vertical-align: middle;
+    }
+    .settings-gear:hover { opacity: 1; }
+
+    .settings-modal {
+      display: none;
+      position: fixed;
+      inset: 20%;
+      background: rgba(10, 20, 40, 0.98);
+      border: 1px solid rgba(100, 180, 255, 0.3);
+      border-radius: 12px;
+      flex-direction: column;
+      padding: 1.5rem;
+      z-index: 200;
+    }
+    .settings-modal.open { display: flex; }
+    .settings-modal h4 { color: #a0c8ff; font-size: 0.95rem; margin-bottom: 0.75rem; }
+    .settings-modal label { font-size: 0.85rem; color: #90b0d0; display: block; margin-bottom: 0.25rem; }
+    .settings-modal select {
+      width: 100%;
+      max-width: 400px;
+      padding: 0.5rem;
+      background: rgba(20, 40, 70, 0.8);
+      border: 1px solid rgba(100, 160, 255, 0.4);
+      border-radius: 6px;
+      color: #c0d8ff;
+      font-size: 0.85rem;
+    }
+    .settings-modal .settings-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }
+    .settings-modal .btn-save-settings {
+      padding: 0.5rem 1rem;
+      background: rgba(80, 160, 100, 0.4);
+      border: 1px solid rgba(100, 200, 120, 0.5);
+      color: #a0e0b0;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    .settings-modal .btn-save-settings:hover {
+      background: rgba(80, 160, 100, 0.6);
+    }
+    .settings-modal .settings-feedback {
+      font-size: 0.8rem;
+      color: #80c090;
+    }
+    .settings-modal .close-btn {
+      margin-top: 1rem;
+      padding: 0.4rem 0.8rem;
+      min-height: 44px;
+      background: rgba(80, 140, 255, 0.3);
+      border: 1px solid rgba(100, 160, 255, 0.5);
+      color: #b0d0ff;
+      border-radius: 8px;
+      cursor: pointer;
+    }
 
     .memory-panel {
       display: none;
@@ -484,6 +600,33 @@
       font-family: inherit;
       font-size: 0.85rem;
     }
+    .tag-cloud {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      padding: 0.75rem 0;
+    }
+    .tag-cloud .cloud-tag {
+      padding: 0.35rem 0.7rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s;
+      border: 1px solid transparent;
+    }
+    .tag-cloud .cloud-tag:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 12px rgba(100, 180, 255, 0.4);
+    }
+    .cloud-section {
+      margin-bottom: 1.25rem;
+    }
+    .cloud-section h5 {
+      font-size: 0.8rem;
+      color: #6a9ada;
+      margin-bottom: 0.5rem;
+    }
+
     .memory-panel-close:hover {
       background: rgba(80, 100, 140, 0.6);
     }
@@ -582,12 +725,16 @@
 
     <div class="messages" id="messages"></div>
 
+    <div class="metrics-panel" id="metricsPanel">
+      <h4>Internal metrics</h4>
+      <div id="metricsContent"></div>
+    </div>
     <div class="memory-panel" id="memoryPanel">
       <div class="memory-panel-header">
-        <h3>Knowledge graph</h3>
+        <h3>Memory & knowledge</h3>
         <button class="memory-panel-close" id="memoryPanelClose">Close</button>
       </div>
-      <div id="memoryGraphContainer"></div>
+      <div id="memoryGraphContainer" class="memory-clouds"></div>
     </div>
     <div class="memory-node-modal" id="memoryNodeModal">
       <h4 id="memoryNodeModalTitle">Node</h4>
@@ -628,13 +775,30 @@
           <span>Listen</span>
         </div>
         <span class="tools-toggle" id="toolsToggle">Tools</span>
+        <span class="toggles-break" aria-hidden="true"></span>
+        <span class="metrics-toggle" id="metricsToggle">Metrics</span>
         <span class="memory-toggle" id="memoryToggle">Memory & Knowledge</span>
+        <svg class="settings-gear" id="settingsGear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/>
+          <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+        </svg>
       </div>
+    </div>
+    <div class="settings-modal" id="settingsModal">
+      <h4>Settings</h4>
+      <label for="voiceSelect">Voice (TTS)</label>
+      <select id="voiceSelect">
+        <option value="">Loading...</option>
+      </select>
+      <div class="settings-actions">
+        <button class="btn-save-settings" id="btnSaveSettings">Save</button>
+        <span class="settings-feedback" id="settingsFeedback"></span>
+      </div>
+      <button class="close-btn" id="settingsModalClose" style="margin-top:1rem">Close</button>
     </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.2/standalone/umd/vis-network.min.js"></script>
   <script>
     const messages = document.getElementById('messages');
     const btnRecord = document.getElementById('btnRecord');
@@ -840,176 +1004,228 @@
     toolsToggle.addEventListener('click', () => {
       toolsPanel.classList.toggle('open');
       memoryPanel.classList.remove('open');
+      metricsPanel.classList.remove('open');
       if (toolsPanel.classList.contains('open')) loadToolQueue();
     });
 
     const memoryToggle = document.getElementById('memoryToggle');
     const memoryPanel = document.getElementById('memoryPanel');
+    const metricsPanel = document.getElementById('metricsPanel');
     const memoryPanelClose = document.getElementById('memoryPanelClose');
     const memoryNodeModal = document.getElementById('memoryNodeModal');
     const memoryNodeModalTitle = document.getElementById('memoryNodeModalTitle');
     const memoryNodeModalContent = document.getElementById('memoryNodeModalContent');
     const memoryNodeModalClose = document.getElementById('memoryNodeModalClose');
 
+    const metricsToggle = document.getElementById('metricsToggle');
+    metricsToggle.addEventListener('click', () => {
+      metricsPanel.classList.toggle('open');
+      toolsPanel.classList.remove('open');
+      memoryPanel.classList.remove('open');
+      if (metricsPanel.classList.contains('open')) loadMetricsView();
+    });
+
     memoryToggle.addEventListener('click', () => {
       memoryPanel.classList.toggle('open');
       toolsPanel.classList.remove('open');
+      metricsPanel.classList.remove('open');
       if (memoryPanel.classList.contains('open')) loadMemoryView();
     });
     memoryPanelClose.addEventListener('click', () => memoryPanel.classList.remove('open'));
     memoryNodeModalClose.addEventListener('click', () => memoryNodeModal.classList.remove('open'));
     memoryNodeModal.addEventListener('click', (e) => { if (e.target === memoryNodeModal) memoryNodeModal.classList.remove('open'); });
 
-    let memoryNetwork = null;
-    const nodeData = {};
+    const settingsGear = document.getElementById('settingsGear');
+    const settingsModal = document.getElementById('settingsModal');
+    const settingsModalClose = document.getElementById('settingsModalClose');
+    const voiceSelect = document.getElementById('voiceSelect');
 
-    async function loadMemoryView() {
-      const container = document.getElementById('memoryGraphContainer');
-      container.innerHTML = '';
-      if (typeof vis === 'undefined') {
-        container.innerHTML = '<p style="color:#888;padding:2rem">Loading graph library...</p>';
+    function apiUrl(path) {
+      return new URL(path, window.location.origin + window.location.pathname).href;
+    }
+    async function loadSettingsModal() {
+      voiceSelect.innerHTML = '<option value="">Loading...</option>';
+      try {
+        const voicesUrl = apiUrl('api/voices');
+        const settingsUrl = apiUrl('api/settings');
+        const [voicesRes, settingsRes] = await Promise.all([fetch(voicesUrl), fetch(settingsUrl)]);
+        if (!voicesRes.ok) throw new Error('Voices: ' + voicesRes.status);
+        if (!settingsRes.ok) throw new Error('Settings: ' + settingsRes.status);
+        const voicesData = await voicesRes.json();
+        const settings = await settingsRes.json();
+        const current = settings.tts_voice || '';
+        const voices = voicesData.voices || [];
+        voiceSelect.innerHTML = voices.map(v =>
+          `<option value="${v.id}" ${v.id === current ? 'selected' : ''}>${v.name || v.id} (${v.gender || ''})</option>`
+        ).join('');
+      } catch (e) {
+        voiceSelect.innerHTML = '<option value="">Error: ' + (e.message || 'Failed to load') + '</option>';
+      }
+    }
+
+    settingsGear.addEventListener('click', async () => {
+      settingsModal.classList.add('open');
+      await loadSettingsModal();
+    });
+    settingsModalClose.addEventListener('click', () => settingsModal.classList.remove('open'));
+    settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) settingsModal.classList.remove('open'); });
+
+    const btnSaveSettings = document.getElementById('btnSaveSettings');
+    const settingsFeedback = document.getElementById('settingsFeedback');
+    btnSaveSettings.addEventListener('click', async () => {
+      const v = voiceSelect.value;
+      if (!v) {
+        settingsFeedback.textContent = 'Select a voice first';
         return;
       }
+      settingsFeedback.textContent = '';
+      try {
+        const fd = new FormData();
+        fd.append('tts_voice', v);
+        const r = await fetch(apiUrl('api/settings'), { method: 'POST', body: fd });
+        if (r.ok) {
+          settingsFeedback.textContent = 'Saved.';
+          setTimeout(() => { settingsFeedback.textContent = ''; }, 2000);
+        } else {
+          settingsFeedback.textContent = 'Save failed';
+        }
+      } catch (e) {
+        settingsFeedback.textContent = 'Error: ' + (e.message || 'Save failed');
+      }
+    });
+
+    async function loadMetricsView() {
+      const el = document.getElementById('metricsContent');
+      el.innerHTML = '<p style="color:#888">Loading...</p>';
       try {
         const r = await fetch('/api/memory-view');
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || 'Failed to load');
 
-        const nodes = new vis.DataSet([]);
-        const edges = new vis.DataSet([]);
-        Object.keys(nodeData).forEach(k => delete nodeData[k]);
+        const bio = data.biology || {};
+        const drives = bio.drives || {};
+        const usage = data.image_usage || {};
+        const subagents = typeof data.subagents === 'string' ? data.subagents : (data.subagents || '—');
 
-        const centerId = 'center';
-        nodes.add({ id: centerId, label: 'Knowledge', level: 0, font: { size: 18 }, color: { background: '#3a5a8a', border: '#6a9ada' }, shape: 'dot', size: 28 });
-        let edgeId = 0;
+        let html = '';
+        html += '<h4>Drives</h4>';
+        ['connection', 'curiosity', 'usefulness', 'expression'].forEach(d => {
+          const v = (drives[d] ?? 0) * 100;
+          const high = v >= 65;
+          html += `<div class="metric-row"><label>${d}</label><div class="metric-bar-wrap"><div class="metric-bar ${high ? 'high' : ''}" style="width:${Math.min(100,v)}%"></div></div><span class="metric-value">${Math.round(v)}%</span></div>`;
+        });
+        const today = usage.today ?? 0;
+        const limit = usage.limit ?? 20;
+        const pct = limit ? Math.min(100, (today / limit) * 100) : 0;
+        html += '<h4>Image usage (today)</h4>';
+        html += `<div class="metric-row"><label>Generated</label><div class="metric-bar-wrap"><div class="metric-bar ${pct >= 80 ? 'high' : ''}" style="width:${pct}%"></div></div><span class="metric-value">${today}/${limit}</span></div>`;
+        html += '<h4>Sub-agents</h4>';
+        html += `<pre style="font-size:0.75rem;color:#a0c8ff;white-space:pre-wrap;margin:0">${escapeHtml(subagents)}</pre>`;
+        el.innerHTML = html;
+      } catch (err) {
+        el.innerHTML = '<p style="color:#c66">Error: ' + escapeHtml(err.message) + '</p>';
+      }
+    }
+
+    function cloudTag(title, content, size) {
+      const s = size || 1;
+      const bg = { 1: 'rgba(80,140,255,0.2)', 2: 'rgba(100,160,255,0.25)', 3: 'rgba(120,180,255,0.3)' }[s] || 'rgba(80,140,255,0.2)';
+      const border = 'rgba(100,180,255,0.4)';
+      const el = document.createElement('span');
+      el.className = 'cloud-tag';
+      el.textContent = content.length > 36 ? content.slice(0, 34) + '…' : content || '—';
+      el.style.background = bg;
+      el.style.borderColor = border;
+      el.style.fontSize = (0.7 + s * 0.1) + 'rem';
+      el.dataset.title = title;
+      el.dataset.content = content;
+      el.addEventListener('click', () => {
+        memoryNodeModalTitle.textContent = title;
+        memoryNodeModalContent.textContent = content;
+        memoryNodeModal.classList.add('open');
+      });
+      return el;
+    }
+
+    async function loadMemoryView() {
+      const container = document.getElementById('memoryGraphContainer');
+      container.innerHTML = '<p style="color:#888;padding:2rem">Loading…</p>';
+      try {
+        const r = await fetch('/api/memory-view');
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Failed to load');
+
+        container.innerHTML = '';
 
         const facts = data.profile?.facts || {};
         const cats = ['background', 'work', 'preferences', 'personal', 'other'];
-        let profileCount = 0;
-        const hubProfile = 'hub-profile';
-        nodes.add({ id: hubProfile, label: 'Profile', level: 1, font: { size: 14 }, color: { background: '#4a3a6a', border: '#8a7aaa' }, shape: 'dot', size: 22 });
-        edges.add({ id: edgeId++, from: centerId, to: hubProfile });
+        const profileSection = document.createElement('div');
+        profileSection.className = 'cloud-section';
+        profileSection.innerHTML = '<h5>Profile</h5>';
+        const profileCloud = document.createElement('div');
+        profileCloud.className = 'tag-cloud';
+        let hasProfile = false;
         for (const cat of cats) {
           for (const item of (facts[cat] || [])) {
-            const id = 'p-' + profileCount++;
-            const label = item.length > 24 ? item.slice(0, 22) + '…' : item;
-            nodeData[id] = { title: cat.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), content: item };
-            nodes.add({ id, label, level: 2, font: { size: 11 }, color: { background: '#3d4a6a', border: '#6a7aaa' }, shape: 'box' });
-            edges.add({ id: edgeId++, from: hubProfile, to: id });
+            profileCloud.appendChild(cloudTag(cat.replace(/_/g, ' '), item, 1));
+            hasProfile = true;
           }
         }
-        if (profileCount === 0) {
-          const id = 'p-empty';
-          nodeData[id] = { title: 'Profile', content: 'No profile facts yet. Share about yourself.' };
-          nodes.add({ id, label: 'Empty', level: 2, font: { size: 11 }, color: { background: '#2a2a3a', border: '#555' }, shape: 'box' });
-          edges.add({ id: edgeId++, from: hubProfile, to: id });
-        }
+        if (!hasProfile) profileCloud.appendChild(cloudTag('Profile', 'No profile facts yet. Share about yourself.', 1));
+        profileSection.appendChild(profileCloud);
+        container.appendChild(profileSection);
 
         const epis = data.episodic || [];
-        const hubEpisodic = 'hub-episodic';
-        nodes.add({ id: hubEpisodic, label: 'Memories', level: 1, font: { size: 14 }, color: { background: '#2a4a4a', border: '#5a8a8a' }, shape: 'dot', size: 22 });
-        edges.add({ id: edgeId++, from: centerId, to: hubEpisodic });
-        let prevEp = null;
-        for (let i = 0; i < Math.min(epis.length, 50); i++) {
-          const e = epis[epis.length - 1 - i];
-          const id = 'e-' + i;
-          const content = e.content || '';
-          const label = content.length > 28 ? content.slice(0, 26) + '…' : content || '…';
-          nodeData[id] = { title: 'Memory', content: content || '(empty)' };
-          nodes.add({ id, label, level: 2, font: { size: 10 }, color: { background: '#2a3a4a', border: '#5a7a8a' }, shape: 'box' });
-          edges.add({ id: edgeId++, from: hubEpisodic, to: id });
-          if (prevEp) edges.add({ id: edgeId++, from: prevEp, to: id, dashes: true });
-          prevEp = id;
-        }
-        if (epis.length === 0) {
-          const id = 'e-empty';
-          nodeData[id] = { title: 'Memories', content: 'No episodic memories yet.' };
-          nodes.add({ id, label: 'Empty', level: 2, font: { size: 11 }, color: { background: '#2a2a3a', border: '#555' }, shape: 'box' });
-          edges.add({ id: edgeId++, from: hubEpisodic, to: id });
-        }
+        const memSection = document.createElement('div');
+        memSection.className = 'cloud-section';
+        memSection.innerHTML = '<h5>Memories</h5>';
+        const memCloud = document.createElement('div');
+        memCloud.className = 'tag-cloud';
+        const recent = epis.slice(-50).reverse();
+        recent.forEach((e, i) => {
+          const c = e.content || '';
+          memCloud.appendChild(cloudTag('Memory', c || '(empty)', i < 5 ? 2 : 1));
+        });
+        if (recent.length === 0) memCloud.appendChild(cloudTag('Memories', 'No episodic memories yet.', 1));
+        memSection.appendChild(memCloud);
+        container.appendChild(memSection);
 
         const work = data.working || {};
         const workKeys = Object.keys(work);
-        const hubWorking = 'hub-working';
-        nodes.add({ id: hubWorking, label: 'Active task', level: 1, font: { size: 14 }, color: { background: '#4a4030', border: '#8a7a5a' }, shape: 'dot', size: 22 });
-        edges.add({ id: edgeId++, from: centerId, to: hubWorking });
-        workKeys.forEach((k, i) => {
-          const id = 'w-' + i;
-          const val = String(work[k]);
-          const label = (k + ': ' + val).length > 24 ? (k + ': ' + val).slice(0, 22) + '…' : k + ': ' + val;
-          nodeData[id] = { title: 'Task state', content: k + ': ' + val };
-          nodes.add({ id, label, level: 2, font: { size: 10 }, color: { background: '#3a3528', border: '#6a5a4a' }, shape: 'box' });
-          edges.add({ id: edgeId++, from: hubWorking, to: id });
-        });
-        if (workKeys.length === 0) {
-          const id = 'w-empty';
-          nodeData[id] = { title: 'Task state', content: 'No active task state.' };
-          nodes.add({ id, label: 'Empty', level: 2, font: { size: 11 }, color: { background: '#2a2a3a', border: '#555' }, shape: 'box' });
-          edges.add({ id: edgeId++, from: hubWorking, to: id });
-        }
+        const workSection = document.createElement('div');
+        workSection.className = 'cloud-section';
+        workSection.innerHTML = '<h5>Active task</h5>';
+        const workCloud = document.createElement('div');
+        workCloud.className = 'tag-cloud';
+        workKeys.forEach(k => workCloud.appendChild(cloudTag('Task', k + ': ' + String(work[k]), 1)));
+        if (workKeys.length === 0) workCloud.appendChild(cloudTag('Task', 'No active task state.', 1));
+        workSection.appendChild(workCloud);
+        container.appendChild(workSection);
 
         const thoughts = data.thoughts || [];
-        const hubThoughts = 'hub-thoughts';
-        nodes.add({ id: hubThoughts, label: 'Background thoughts', level: 1, font: { size: 14 }, color: { background: '#3a4a3a', border: '#6a8a6a' }, shape: 'dot', size: 22 });
-        edges.add({ id: edgeId++, from: centerId, to: hubThoughts });
-        for (let i = 0; i < Math.min(thoughts.length, 20); i++) {
-          const t = thoughts[i];
-          const id = 't-' + i;
-          const content = t.content || '';
-          const label = content.length > 28 ? content.slice(0, 26) + '…' : content || '…';
-          nodeData[id] = { title: 'Thought', content: content };
-          nodes.add({ id, label, level: 2, font: { size: 10 }, color: { background: '#2a3a35', border: '#5a7a6a' }, shape: 'box' });
-          edges.add({ id: edgeId++, from: hubThoughts, to: id });
-        }
-        if (thoughts.length === 0) {
-          const id = 't-empty';
-          nodeData[id] = { title: 'Thoughts', content: 'No background thoughts yet. Spawn background_thoughts.py to start.' };
-          nodes.add({ id, label: 'Empty', level: 2, font: { size: 11 }, color: { background: '#2a2a3a', border: '#555' }, shape: 'box' });
-          edges.add({ id: edgeId++, from: hubThoughts, to: id });
-        }
+        const thSection = document.createElement('div');
+        thSection.className = 'cloud-section';
+        thSection.innerHTML = '<h5>Background thoughts</h5>';
+        const thCloud = document.createElement('div');
+        thCloud.className = 'tag-cloud';
+        thoughts.slice(0, 25).forEach((t, i) => thCloud.appendChild(cloudTag('Thought', t.content || '', i < 3 ? 2 : 1)));
+        if (thoughts.length === 0) thCloud.appendChild(cloudTag('Thoughts', 'No background thoughts yet.', 1));
+        thSection.appendChild(thCloud);
+        container.appendChild(thSection);
 
         const bio = data.biology || {};
         const drives = bio.drives || {};
-        const hubBio = 'hub-biology';
-        nodes.add({ id: hubBio, label: 'Drives', level: 1, font: { size: 14 }, color: { background: '#4a2a4a', border: '#8a5a8a' }, shape: 'dot', size: 22 });
-        edges.add({ id: edgeId++, from: centerId, to: hubBio });
-        ['connection', 'curiosity', 'usefulness', 'expression'].forEach((d, i) => {
-          const v = (drives[d] ?? 0).toFixed(2);
-          const id = 'b-' + i;
-          const label = d + ': ' + v;
-          const pct = Math.round((drives[d] ?? 0) * 100);
-          nodeData[id] = { title: 'Drive', content: d + ': ' + v + ' (' + pct + '%). ' + (bio.should_proactive ? 'Proactive ready.' : 'Accumulating.') };
-          nodes.add({ id, label, level: 2, font: { size: 10 }, color: { background: '#3a2a3a', border: '#6a4a6a' }, shape: 'box' });
-          edges.add({ id: edgeId++, from: hubBio, to: id });
+        const driveSection = document.createElement('div');
+        driveSection.className = 'cloud-section';
+        driveSection.innerHTML = '<h5>Drives</h5>';
+        const driveCloud = document.createElement('div');
+        driveCloud.className = 'tag-cloud';
+        ['connection', 'curiosity', 'usefulness', 'expression'].forEach(d => {
+          const v = ((drives[d] ?? 0) * 100).toFixed(0);
+          driveCloud.appendChild(cloudTag('Drive', d + ': ' + v + '%', (drives[d] ?? 0) >= 0.65 ? 2 : 1));
         });
-
-        const netData = { nodes, edges };
-        const opts = {
-          nodes: { font: { color: '#c0d8f0' } },
-          edges: { color: { color: 'rgba(100,160,255,0.5)' }, width: 1.5 },
-          layout: {
-            hierarchical: {
-              direction: 'UD',
-              sortMethod: 'directed',
-              levelSeparation: 100,
-              nodeSpacing: 120,
-              treeSpacing: 150,
-              blockShifting: true
-            }
-          },
-          physics: { enabled: false },
-          interaction: { zoomView: true, dragView: true }
-        };
-        memoryNetwork = new vis.Network(container, netData, opts);
-        memoryNetwork.on('click', function(params) {
-          const id = params.nodes[0];
-          if (id && nodeData[id]) {
-            const d = nodeData[id];
-            memoryNodeModalTitle.textContent = d.title;
-            memoryNodeModalContent.textContent = d.content;
-            memoryNodeModal.classList.add('open');
-          }
-        });
+        driveSection.appendChild(driveCloud);
+        container.appendChild(driveSection);
       } catch (err) {
         container.innerHTML = '<p style="color:#c66;padding:2rem">Error: ' + escapeHtml(err.message) + '</p>';
       }

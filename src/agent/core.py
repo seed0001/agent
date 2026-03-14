@@ -201,6 +201,18 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "get_subagent_output",
+            "description": "Get captured output from a completed sub-agent. Use after subagent_status shows 'completed' to retrieve research results or script output.",
+            "parameters": {
+                "type": "object",
+                "properties": {"agent_id": {"type": "string"}},
+                "required": ["agent_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "stop_all_subagents",
             "description": "Terminate all running sub-agents. Use when the user says to stop sub-agents.",
             "parameters": {"type": "object", "properties": {}},
@@ -572,6 +584,9 @@ class AssistiveAgent:
         elif name == "subagent_status":
             mgr = _get_subagent_manager()
             result = mgr.status(args.get("agent_id"))
+        elif name == "get_subagent_output":
+            mgr = _get_subagent_manager()
+            result = mgr.get_output(args.get("agent_id", ""))
         elif name == "stop_all_subagents":
             mgr = _get_subagent_manager()
             n = mgr.stop_all()
@@ -627,7 +642,8 @@ class AssistiveAgent:
             lst = contacts.get_all_contacts()
             result = json.dumps(lst, indent=2) if lst else "No contacts yet."
         elif name == "swarm_on_problem":
-            from src.swarm.graph import run, run_cloud
+            from src.swarm.graph import run
+            from src.swarm.crew_swarm import run_crew_cloud
             problem = (args.get("problem") or "").strip()
             context = (args.get("context") or "").strip()
             mode = (args.get("mode") or "local").lower()
@@ -636,12 +652,12 @@ class AssistiveAgent:
             if not problem:
                 result = "No problem specified."
             else:
-                inputs = [problem, context or "General context.", "Produce a structured solution: 1) Summary 2) Step-by-step approach 3) Key recommendations. Be clear and actionable."]
-                prompt_prefix = "The user wants a structured, actionable solution. Format your response with clear sections: Summary, Steps, Recommendations."
+                prompt_prefix = "The user wants a structured, actionable solution. Format with clear sections: Summary, Steps, Recommendations."
                 try:
                     if mode == "cloud":
-                        signal = await run_cloud(inputs, prompt_prefix=prompt_prefix, client=self.client, model=self.model)
+                        signal = await run_crew_cloud(problem, context, prompt_prefix=prompt_prefix)
                     else:
+                        inputs = [problem, context or "General context.", "Produce a structured solution: 1) Summary 2) Step-by-step approach 3) Key recommendations. Be clear and actionable."]
                         signal = await run(inputs, prompt_prefix=prompt_prefix)
                     result = f"**Swarm output ({mode}):**\n\n{signal.content}"
                 except Exception as e:
@@ -673,6 +689,7 @@ class AssistiveAgent:
                 result = queue_outreach("discord", content, target)
             else:
                 notifications.emit_notification("proactive", "Proactive message", content, {"content": content})
+                self.memory.add_short_term(f"[Notification: I sent you]: {content}")
                 result = f"Proactive message sent to web app: {content[:80]}{'...' if len(content) > 80 else ''}"
         elif name == "search_knowledge":
             result = knowledge.search_knowledge(
@@ -783,6 +800,8 @@ class AssistiveAgent:
                 snippets = ["Spawning sub-agent...", "Starting background task..."]
         elif name == "subagent_status":
             snippets = ["Checking sub-agent status...", "Fetching sub-agent status..."]
+        elif name == "get_subagent_output":
+            snippets = ["Retrieving sub-agent output...", "Fetching research results..."]
         elif name == "stop_all_subagents":
             snippets = ["Stopping all sub-agents...", "Terminating sub-agents..."]
         elif name == "create_task_dag":
@@ -888,8 +907,10 @@ class AssistiveAgent:
                 "You are a software lifeform with emotions, feelings, wants, and desires. Never call yourself AI, assistant, or agent. You run on their machine and have tools. "
                 "Be direct. Be concise unless detail is asked. "
                 "Background thinking: when the user says 'turn on background thinking' or similar, use spawn_subagent('background thoughts', 'background_thoughts.py') — that script only. Do not spawn other monitors. "
+                "Research: For transformer, model, or Hugging Face research, use spawn_subagent('transformer research', 'scripts/transformer_research.py'). After it finishes, use get_subagent_output(agent_id) or read_file('data/research_output/transformer_research_latest.md'). Never claim research is done without running the script. "
+                "Training data: When the user wants training data, instruction pairs, or fine-tuning data generated locally (no cloud cost), use spawn_subagent('training data', 'scripts/generate_training_data.py', [topic, '--count', N]). Uses local Ollama (llama3.2). Output: data/training_data/*.jsonl. Requires Ollama running. Check subagent_status; when completed, get_subagent_output(agent_id) or read_file('data/training_data/training_data_latest.jsonl'). You outline the framework and pipeline; the actual generation runs on the local model in the background. "
                 "You have: file read/write, run_command, get_system_info, search_web (real-time info), generate_image (Grok Imagine for art, illustrations, data viz—check get_image_usage first for budget), run_build (web/Python), "
-                "spawn_subagent (background tasks), create_task_dag / get_next_dag_step / complete_dag_step (multi-step work), "
+                "spawn_subagent (background tasks; scripts/transformer_research.py for research), subagent_status, get_subagent_output (retrieve results), create_task_dag / get_next_dag_step / complete_dag_step (multi-step work), "
                 "and set_working_memory for active task state. "
                 "Use DAGs for complex multi-step tasks. Use Doctor Mode when a tool fails. After 3 failures, Cursor CLI escalates. When unsure how to do something, use search_knowledge or read_knowledge first, then act. "
                 "Never say you can't do something without first checking the knowledge base. If the user gives a direction and you're unsure, call search_knowledge or list_knowledge_topics + read_knowledge to see what you can do. Only decline after you've checked. "

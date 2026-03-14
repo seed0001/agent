@@ -43,10 +43,16 @@ Only call after the user has chosen cloud or local.
 
 | Mode | What It Does |
 |------|--------------|
-| **Local** | Uses Ollama (llama3.2:latest). Hybrid: lightweight hidden neurons + LLM output neuron. Runs on the user's machine. |
-| **Cloud** | Uses Grok. Simulates 3 neurons (technical, practical, risk) in parallel, then synthesizes. Uses xAI API. |
+| **Local** | Uses Ollama (llama3.2:latest). Custom neuron graph: lightweight hidden neurons + LLM output neuron. Runs on the user's machine. |
+| **Cloud** | Uses CrewAI + Grok. Four agents collaborate: Technical Analyst, Practical Advisor, Risk Evaluator, Synthesis Lead. Sequential process. Uses xAI API. |
 
 **Local** needs Ollama running with `llama3.2:latest`. If the swarm errors locally, remind the user to start Ollama.
+
+**Cloud** uses CrewAI agents:
+- **Technical Analyst** – Implementation details, technical steps, feasibility
+- **Practical Advisor** – Resources, constraints, realistic timelines
+- **Risk Evaluator** – Failure modes, mitigation strategies
+- **Synthesis Lead** – Combines the three into Summary, Steps, Recommendations
 
 ---
 

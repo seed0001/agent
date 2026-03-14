@@ -53,6 +53,7 @@ DEFAULT_POLICY = {
         "run_build",
         "spawn_subagent",
         "subagent_status",
+        "get_subagent_output",
         "search_knowledge",
         "read_knowledge",
         "list_knowledge_topics",

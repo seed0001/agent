@@ -78,6 +78,11 @@ async def _run_discord_bot():
             content[:200],
             {"author": author_name, "author_id": author_id, "content": content},
         )
+        # Store in memory so when Creator replies (e.g. in web), agent knows what they're responding to
+        try:
+            _agent_ref.memory.add_short_term(f"[Discord – {author_name} said]: {content}")
+        except Exception:
+            pass
         notifications.show_desktop_notification(
             f"Discord from {author_name}",
             content[:200],
@@ -171,8 +176,9 @@ async def _run_discord_bot():
         if reply:
             try:
                 from src.voice.tts import synthesize
+                from src.user_settings import get_tts_voice
 
-                voice_bytes = await synthesize(reply)
+                voice_bytes = await synthesize(reply, voice=get_tts_voice())
             except Exception:
                 pass
 
@@ -246,8 +252,9 @@ async def _outreach_consumer():
             voice_bytes = None
             try:
                 from src.voice.tts import synthesize
+                from src.user_settings import get_tts_voice
 
-                voice_bytes = await synthesize(content)
+                voice_bytes = await synthesize(content, voice=get_tts_voice())
             except Exception:
                 pass
             first = True
@@ -273,6 +280,11 @@ async def _outreach_consumer():
                 else:
                     await user.send(chunk)
             log_outreach_success("discord", user_id)
+            # Store in memory so when Creator replies, agent knows what they're responding to
+            try:
+                _agent_ref.memory.add_short_term(f"[Proactive message I sent you via Discord]: {content}")
+            except Exception:
+                pass
         except Exception as e:
             log_outreach_failure("discord", user_id, str(e))
             notifications.emit_notification(
@@ -290,6 +302,7 @@ async def _outreach_consumer():
                 pass
             try:
                 notifications.emit_notification("proactive", "Proactive (Discord failed)", content[:200], {"content": content})
+                _agent_ref.memory.add_short_term(f"[Proactive I sent you via web (Discord failed)]: {content}")
             except Exception:
                 pass
 

@@ -47,6 +47,17 @@ def _inc_usage(count: int = 1) -> dict[str, Any]:
     return data
 
 
+def get_usage_data() -> dict:
+    """Return structured usage for dashboard: today, limit, remaining, total."""
+    import os
+    limit = int(os.getenv("IMAGE_GEN_DAILY_LIMIT", str(DEFAULT_DAILY_LIMIT)))
+    data = _load_usage()
+    today = str(date.today())
+    today_count = data.get("by_date", {}).get(today, 0)
+    remaining = max(0, limit - today_count)
+    return {"today": today_count, "limit": limit, "remaining": remaining, "total": data.get("total", 0)}
+
+
 def get_image_usage(daily_limit: int | None = None) -> str:
     """
     Return current image generation usage for budget tracking.

@@ -29,3 +29,6 @@ discord.py>=2.3.0
 
 # Desktop notifications
 plyer>=2.1.0
+
+# Swarm (cloud mode - CrewAI)
+crewai>=0.80.0

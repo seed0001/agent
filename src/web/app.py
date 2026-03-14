@@ -21,11 +21,13 @@ agent: AssistiveAgent | None = None
 _discord_task: asyncio.Task | None = None
 _background_thoughts_task: asyncio.Task | None = None
 _status_check_task: asyncio.Task | None = None
+_chance_reminder_task: asyncio.Task | None = None
 
 
 async def _status_check_loop():
-    """Periodic self-diagnostic: sub-agent status, alert on issues before they escalate."""
+    """Periodic self-diagnostic: sub-agent status. Alert only when issues first appear, not every poll."""
     STATUS_INTERVAL = 600  # 10 min
+    _last_had_issues = False
     while True:
         await asyncio.sleep(STATUS_INTERVAL)
         if agent is None:
@@ -38,7 +40,7 @@ async def _status_check_loop():
             status = mgr.status()
             issues = "failed" in status.lower() or "error" in status.lower()
             log_status_check(status, issues)
-            if issues:
+            if issues and not _last_had_issues:
                 try:
                     from src.agent import soul
                     s = soul.load_soul()
@@ -51,12 +53,57 @@ async def _status_check_loop():
                     f"Sub-agent or tool issue detected: {status[:150]}",
                     {"status": status},
                 )
+                try:
+                    agent.memory.add_short_term(f"[Status alert I sent you]: Sub-agent or tool issue: {status[:200]}")
+                except Exception:
+                    pass
+                _last_had_issues = True
+            elif not issues:
+                _last_had_issues = False
         except asyncio.CancelledError:
             break
         except Exception as e:
             try:
                 from src.logging_config import log_error
                 log_error("status_check_loop", e)
+            except Exception:
+                pass
+
+
+async def _chance_reminder_loop():
+    """Send Chance reminders only at 8–9 AM and 7–8 PM local time, once per window per day."""
+    from src.reminders import (
+        should_send_chance_reminder,
+        record_chance_reminder_sent,
+        get_chance_reminder_message,
+    )
+    from config.settings import DISCORD_OWNER_ID
+
+    CHECK_INTERVAL = 300  # 5 min
+    while True:
+        await asyncio.sleep(CHECK_INTERVAL)
+        if agent is None or not DISCORD_OWNER_ID:
+            continue
+        try:
+            if not should_send_chance_reminder("default"):
+                continue
+            msg = get_chance_reminder_message()
+            record_chance_reminder_sent("default")
+            from src import notifications
+            try:
+                from src.agent import soul
+                title = (soul.load_soul().get("agent_name") or "").strip() or "Software Lifeform"
+            except Exception:
+                title = "Software Lifeform"
+            notifications.emit_notification("proactive", title, msg, {"content": msg})
+            from src.outreach import queue_outreach
+            queue_outreach("discord", msg, target_user_id=DISCORD_OWNER_ID)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            try:
+                from src.logging_config import log_error
+                log_error("chance_reminder", e)
             except Exception:
                 pass
 
@@ -88,10 +135,11 @@ async def _background_thoughts_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global agent, _discord_task, _background_thoughts_task, _status_check_task
+    global agent, _discord_task, _background_thoughts_task, _status_check_task, _chance_reminder_task
     agent = AssistiveAgent(user_id="default")
     _background_thoughts_task = asyncio.create_task(_background_thoughts_loop())
     _status_check_task = asyncio.create_task(_status_check_loop())
+    _chance_reminder_task = asyncio.create_task(_chance_reminder_loop())
     # Start Discord bot (and outreach consumer) if configured
     try:
         from src.discord_bot import set_agent, start_discord_task
@@ -111,6 +159,12 @@ async def lifespan(app: FastAPI):
         _status_check_task.cancel()
         try:
             await _status_check_task
+        except asyncio.CancelledError:
+            pass
+    if _chance_reminder_task and not _chance_reminder_task.done():
+        _chance_reminder_task.cancel()
+        try:
+            await _chance_reminder_task
         except asyncio.CancelledError:
             pass
     if _discord_task and not _discord_task.done():
@@ -202,6 +256,7 @@ async def api_memory_view():
     """Return profile, episodic memories, working memory, and biology state."""
     if not agent:
         return JSONResponse({"error": "Agent not ready"}, status_code=503)
+    from src.tools import image_gen
     m = agent.memory
     return {
         "profile": m.get_profile_view(),
@@ -209,6 +264,8 @@ async def api_memory_view():
         "working": m.get_working_view(),
         "thoughts": m.get_thoughts_view(),
         "biology": agent.biology.get_view(),
+        "image_usage": image_gen.get_usage_data(),
+        "subagents": agent_core._get_subagent_manager().status(),
     }
 
 
@@ -285,11 +342,45 @@ async def api_get_access_policy():
     return {"policy": policy, "tiers": list(CONTACT_TIERS)}
 
 
+@app.get("/api/voices")
+async def api_voices():
+    """List available Edge TTS voices for voice selector."""
+    try:
+        import edge_tts
+        voices = await edge_tts.list_voices()
+        return {
+            "voices": [
+                {"id": v.get("ShortName", ""), "name": v.get("FriendlyName", ""), "gender": v.get("Gender", ""), "locale": v.get("Locale", "")}
+                for v in (voices or []) if v.get("ShortName")
+            ]
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/settings")
+async def api_get_settings():
+    """Get user settings (tts_voice, etc.)."""
+    from src.user_settings import get_settings
+    return get_settings("default")
+
+
+@app.post("/api/settings")
+async def api_set_settings(tts_voice: str = Form(None)):
+    """Update user settings. tts_voice: Edge TTS ShortName (e.g. en-GB-RyanNeural)."""
+    from src.user_settings import set_setting
+    if tts_voice:
+        set_setting("tts_voice", tts_voice)
+    return {"ok": True}
+
+
 @app.post("/api/speak")
-async def api_speak(text: str = Form(...)):
+async def api_speak(text: str = Form(...), voice: str = Form(None)):
     """Convert text to speech, return base64 mp3."""
     try:
-        audio_bytes = await synthesize(text)
+        from src.user_settings import get_tts_voice
+        voice_id = voice or get_tts_voice("default")
+        audio_bytes = await synthesize(text, voice=voice_id)
         b64 = base64.b64encode(audio_bytes).decode("utf-8")
         return {"audio": f"data:audio/mp3;base64,{b64}"}
     except Exception as e:

@@ -73,6 +73,7 @@ A software lifeform powered by Grok 3 (xAI) with full system access, memory, voi
 |------|-------------|
 | `spawn_subagent` | Run a script in the background |
 | `subagent_status` | Check sub-agent status |
+| `get_subagent_output` | Retrieve captured output from a completed sub-agent |
 | `stop_all_subagents` | Stop all sub-agents |
 | `search_knowledge` | Search how-to guides |
 | `read_knowledge` | Read a specific topic |
@@ -131,6 +132,18 @@ Only you (Creator) can change tiers. Edit `config/access_policy.py` or `data/pro
 - **Input:** Record → Stop → Send (Whisper transcription)
 - **Output:** Edge TTS (Ryan, British male)
 - Toggles in the web app for speak/listen
+
+---
+
+## Training Pipeline
+
+Research and data generation run locally to avoid cloud cost:
+
+1. **Research** – `spawn_subagent("transformer research", "scripts/transformer_research.py")` → web search, compiled report in `data/research_output/`.
+2. **Training data** – `spawn_subagent("training data", "scripts/generate_training_data.py", ["topic", "--count", "50"])` → local Ollama (llama3.2) generates instruction–response JSONL in `data/training_data/`.
+3. **Fine-tuning** – Use Hugging Face, LLaMA-Factory, etc. She can write scripts and run commands to orchestrate.
+
+Requires Ollama with `llama3.2:latest` for data generation. See `knowledge/training_data` for full pipeline docs.
 
 ---
 

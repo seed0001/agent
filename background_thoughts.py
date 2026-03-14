@@ -99,6 +99,15 @@ async def run_once(user_id: str = "default") -> str:
         except Exception:
             pass
 
+    # Chance reminders only in morning (8–9) or evening (7–8); block drive-based Chance spam otherwise
+    if not skip_outreach and "chance" in thought.lower():
+        try:
+            from src.reminders import is_chance_window
+            if not is_chance_window():
+                skip_outreach = True
+        except Exception:
+            pass
+
     if not skip_outreach:
         try:
             from src import notifications
