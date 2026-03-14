@@ -9,18 +9,36 @@ from config.settings import EDGE_TTS_VOICE
 
 
 def _sanitize_for_tts(text: str) -> str:
-    """Strip markdown so TTS doesn't say 'asterisk' or read delimiters aloud."""
+    """Strip markdown so TTS doesn't read delimiters aloud (asterisk, hashtag, backtick, etc.)."""
     if not text or not isinstance(text, str):
         return text
+    s = text
     # Remove **bold** and *italic* – keep inner text
-    s = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)
     s = re.sub(r"\*(.+?)\*", r"\1", s)
     s = re.sub(r"__(.+?)__", r"\1", s)
     s = re.sub(r"_(.+?)_", r"\1", s)
-    # Remove orphan asterisks/underscores (e.g. "*" or "***")
+    # Remove `code` – keep inner text
+    s = re.sub(r"`([^`]+)`", r"\1", s)
+    # Remove [link](url) – keep link text only
+    s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
+    s = re.sub(r"\[([^\]]+)\]", r"\1", s)
+    # Remove # headers – keep text (## ### etc)
+    s = re.sub(r"^#{1,6}\s+", "", s, flags=re.MULTILINE)
+    # Remove # mid-text (hashtags)
+    s = re.sub(r"#+(\w+)", r"\1", s)
+    s = re.sub(r"#+", " ", s)
+    # Remove > blockquote prefix
+    s = re.sub(r"^>\s*", "", s, flags=re.MULTILINE)
+    # Remove pipe (table separator)
+    s = re.sub(r"\s*\|\s*", " ", s)
+    # Remove orphan asterisks/underscores
     s = re.sub(r"[*_]{1,}", " ", s)
-    # Collapse extra spaces
-    s = re.sub(r"  +", " ", s).strip()
+    # Remove horizontal rules (---, ***)
+    s = re.sub(r"^[-*]{2,}\s*$", "", s, flags=re.MULTILINE)
+    # Collapse extra spaces and newlines
+    s = re.sub(r"  +", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s).strip()
     return s
 
 
