@@ -179,4 +179,10 @@ Images are saved automatically; `generated_images/` is gitignored.
 
 ## Logs
 
-`logs/agent.log` — Tool calls, results, Doctor Mode, Cursor CLI escalations, errors. Use this to debug when something goes wrong (e.g. image gen timeout, escalation loops). Logs are gitignored.
+`logs/agent.log` — Tool calls, results, Doctor Mode, Cursor CLI escalations, outreach (attempt/success/failure), sub-agent lifecycle, status checks, errors. Use this to debug delivery issues (e.g. Chance reminders), image gen, escalation loops. Logs are gitignored.
+
+### Outreach & delivery
+
+- Discord DM failure → logged, fallback to web notification, desktop alert
+- `delivery_failed` notification when Discord can't deliver
+- `status_alert` when sub-agent or tool issues detected (every 10 min)

@@ -30,6 +30,11 @@ class OutreachMessage:
 
 def queue_outreach(channel: str, content: str, target_user_id: str | None = None) -> str:
     """Add a proactive message to the queue. Returns confirmation."""
+    try:
+        from src.logging_config import log_outreach_attempt
+        log_outreach_attempt("queue", target_user_id or "owner", content[:80])
+    except Exception:
+        pass
     msg = OutreachMessage(channel=channel, content=content, target_user_id=target_user_id)
     # Persist to file for durability
     OUTREACH_PATH.parent.mkdir(parents=True, exist_ok=True)

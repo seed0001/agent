@@ -32,7 +32,11 @@ class SubAgentManager:
         aid = f"sub_{self._counter}"
         agent = SubAgent(id=aid, task=task)
         self.agents[aid] = agent
-        # Fire and forget - actual spawn would be async
+        try:
+            from src.logging_config import log_subagent_spawn
+            log_subagent_spawn(aid, task, script_path)
+        except Exception:
+            pass
         asyncio.create_task(self._run_agent(aid, script_path, args or []))
         return aid
 
@@ -52,9 +56,19 @@ class SubAgentManager:
             text = out.decode("utf-8", errors="replace")
             self.agents[aid].output.append(text)
             self.agents[aid].status = "completed"
+            try:
+                from src.logging_config import log_subagent_status
+                log_subagent_status(aid, "completed", "")
+            except Exception:
+                pass
         except Exception as e:
             self.agents[aid].output.append(str(e))
             self.agents[aid].status = "failed"
+            try:
+                from src.logging_config import log_subagent_status
+                log_subagent_status(aid, "failed", str(e)[:100])
+            except Exception:
+                pass
 
     def status(self, aid: str | None = None) -> str:
         """Get status of one or all sub-agents."""

@@ -20,6 +20,45 @@ from src.voice.tts import synthesize
 agent: AssistiveAgent | None = None
 _discord_task: asyncio.Task | None = None
 _background_thoughts_task: asyncio.Task | None = None
+_status_check_task: asyncio.Task | None = None
+
+
+async def _status_check_loop():
+    """Periodic self-diagnostic: sub-agent status, alert on issues before they escalate."""
+    STATUS_INTERVAL = 600  # 10 min
+    while True:
+        await asyncio.sleep(STATUS_INTERVAL)
+        if agent is None:
+            continue
+        try:
+            from src.agent import core as agent_core
+            from src.logging_config import log_status_check
+            from src import notifications
+            mgr = agent_core._get_subagent_manager()
+            status = mgr.status()
+            issues = "failed" in status.lower() or "error" in status.lower()
+            log_status_check(status, issues)
+            if issues:
+                try:
+                    from src.agent import soul
+                    s = soul.load_soul()
+                    title = (s.get("agent_name") or "Agent").strip() or "Software Lifeform"
+                except Exception:
+                    title = "Software Lifeform"
+                notifications.emit_notification(
+                    "status_alert",
+                    f"{title} — Status check",
+                    f"Sub-agent or tool issue detected: {status[:150]}",
+                    {"status": status},
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            try:
+                from src.logging_config import log_error
+                log_error("status_check_loop", e)
+            except Exception:
+                pass
 
 
 async def _background_thoughts_loop():
@@ -40,15 +79,19 @@ async def _background_thoughts_loop():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            print(f"Background thought error: {e}")
+            try:
+                from src.logging_config import log_error
+                log_error("background_thoughts", e)
+            except Exception:
+                print(f"Background thought error: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global agent, _discord_task, _background_thoughts_task
+    global agent, _discord_task, _background_thoughts_task, _status_check_task
     agent = AssistiveAgent(user_id="default")
-    # Start background thinking (autonomous) + proactive outreach from boot
     _background_thoughts_task = asyncio.create_task(_background_thoughts_loop())
+    _status_check_task = asyncio.create_task(_status_check_loop())
     # Start Discord bot (and outreach consumer) if configured
     try:
         from src.discord_bot import set_agent, start_discord_task
@@ -62,6 +105,12 @@ async def lifespan(app: FastAPI):
         _background_thoughts_task.cancel()
         try:
             await _background_thoughts_task
+        except asyncio.CancelledError:
+            pass
+    if _status_check_task and not _status_check_task.done():
+        _status_check_task.cancel()
+        try:
+            await _status_check_task
         except asyncio.CancelledError:
             pass
     if _discord_task and not _discord_task.done():

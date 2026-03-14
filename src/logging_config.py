@@ -52,3 +52,28 @@ def log_cursor_cli(called: bool, outcome: str) -> None:
 
 def log_error(context: str, exc: Exception | str) -> None:
     _setup_logger().error(f"ERROR | {context} | {exc}")
+
+
+def log_outreach_attempt(channel: str, target: str, content_preview: str) -> None:
+    _setup_logger().info(f"OUTREACH_ATTEMPT | channel={channel} target={target} | {content_preview[:100]}")
+
+
+def log_outreach_success(channel: str, target: str) -> None:
+    _setup_logger().info(f"OUTREACH_SUCCESS | channel={channel} target={target}")
+
+
+def log_outreach_failure(channel: str, target: str, error: str) -> None:
+    _setup_logger().warning(f"OUTREACH_FAILURE | channel={channel} target={target} | {error}")
+
+
+def log_subagent_spawn(aid: str, task: str, script: str) -> None:
+    _setup_logger().info(f"SUBAGENT_SPAWN | {aid} | task={task} | script={script}")
+
+
+def log_subagent_status(aid: str, status: str, extra: str = "") -> None:
+    _setup_logger().info(f"SUBAGENT_STATUS | {aid} | status={status} | {extra}")
+
+
+def log_status_check(result: str, issues: bool) -> None:
+    level = logging.WARNING if issues else logging.INFO
+    _setup_logger().log(level, f"STATUS_CHECK | issues={issues} | {result[:300]}")

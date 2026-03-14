@@ -238,6 +238,9 @@ async def _outreach_consumer():
         content = (msg.content or "").strip()
         if not content:
             continue
+        from src.logging_config import log_outreach_attempt, log_outreach_failure, log_outreach_success
+        from src import notifications
+        log_outreach_attempt("discord", user_id, content[:80])
         try:
             user = await client.fetch_user(int(user_id))
             voice_bytes = None
@@ -269,8 +272,26 @@ async def _outreach_consumer():
                     await user.send(chunk, files=files)
                 else:
                     await user.send(chunk)
+            log_outreach_success("discord", user_id)
         except Exception as e:
-            print(f"Discord outreach failed: {e}")
+            log_outreach_failure("discord", user_id, str(e))
+            notifications.emit_notification(
+                "delivery_failed",
+                "Discord DM failed",
+                f"Could not deliver to {user_id}: {str(e)[:100]}. Falling back to web.",
+                {"channel": "discord", "target": user_id, "error": str(e), "content_preview": content[:100]},
+            )
+            try:
+                notifications.show_desktop_notification(
+                    "Discord DM failed — check web app",
+                    f"Error: {str(e)[:80]}. Message delivered via web instead.",
+                )
+            except Exception:
+                pass
+            try:
+                notifications.emit_notification("proactive", "Proactive (Discord failed)", content[:200], {"content": content})
+            except Exception:
+                pass
 
 
 def start_discord_task():
