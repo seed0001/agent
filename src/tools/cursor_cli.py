@@ -4,6 +4,7 @@ Runs: agent -p "prompt" --output-format text
 Uses CURSOR_API_KEY from env for authentication.
 """
 import asyncio
+
 import os
 import shutil
 
@@ -27,6 +28,8 @@ async def ask_cursor_cli(prompt: str, cwd: str | None = None, timeout: int = 120
         env["CURSOR_API_KEY"] = CURSOR_API_KEY
 
     try:
+        from src.logging_config import log_cursor_cli
+        log_cursor_cli(True, f"calling with prompt_len={len(safe_prompt)}")
         proc = await asyncio.create_subprocess_shell(
             full_cmd,
             cwd=run_cwd,
@@ -38,9 +41,17 @@ async def ask_cursor_cli(prompt: str, cwd: str | None = None, timeout: int = 120
         text = (out or b"").decode("utf-8", errors="replace").strip()
         err_text = (err or b"").decode("utf-8", errors="replace").strip()
         if err_text and "error" in err_text.lower():
+            from src.logging_config import log_cursor_cli
+            log_cursor_cli(True, f"stderr: {err_text[:200]}")
             return f"Cursor CLI error: {err_text[:500]}"
+        from src.logging_config import log_cursor_cli
+        log_cursor_cli(True, f"ok len={len(text)}")
         return text if text else "Cursor CLI returned no output."
     except asyncio.TimeoutError:
+        from src.logging_config import log_cursor_cli
+        log_cursor_cli(True, "timed out")
         return "Error: Cursor CLI timed out."
     except Exception as e:
+        from src.logging_config import log_error
+        log_error("cursor_cli", e)
         return f"Error running Cursor CLI: {e}"

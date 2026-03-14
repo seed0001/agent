@@ -4,6 +4,7 @@ __pycache__/
 data/
 logs/
 process_log.txt
+generated_images/
 .venv/
 venv/
 *.egg-info/

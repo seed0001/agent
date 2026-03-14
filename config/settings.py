@@ -15,6 +15,11 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 
 KNOWLEDGE_DIR = PROJECT_ROOT / "knowledge"
 
+# Generated images (gitignored). Override with IMAGE_OUTPUT_DIR env (e.g. ~/Pictures/Adam).
+IMAGE_OUTPUT_DIR = Path(
+    os.getenv("IMAGE_OUTPUT_DIR", str(PROJECT_ROOT / "generated_images"))
+).expanduser().resolve()
+
 for d in (DATA_DIR, MEMORY_DIR, USER_PROFILES_DIR, LOGS_DIR, KNOWLEDGE_DIR):
     d.mkdir(parents=True, exist_ok=True)
 

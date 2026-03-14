@@ -18,3 +18,4 @@ Use `search_knowledge(query)` to find how-tos, or `read_knowledge(topic)` to rea
 - system – get_system_info
 - ollama – launch Ollama model selector GUI
 - dynamic_tools – suggest, approve, implement new tools (add_suggested_tools, get_tool_queue)
+- image_gen – generate_image, get_image_usage (Grok Imagine, budget tracking)

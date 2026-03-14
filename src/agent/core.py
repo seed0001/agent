@@ -13,7 +13,15 @@ from src.agent.doctor_mode import DoctorMode, FailureEvent, FailureKind
 from src.agent.memory import MemoryStore
 from src.agent import soul
 from src import contacts, notifications
-from src.tools import system, build, subagents, search, cursor_cli, knowledge, tool_queue
+from src.logging_config import (
+    log_cursor_cli,
+    log_doctor_mode,
+    log_escalation,
+    log_error,
+    log_tool_result,
+    log_tool_start,
+)
+from src.tools import system, build, subagents, search, cursor_cli, knowledge, tool_queue, image_gen
 from src.tools.dynamic_loader import load_dynamic_tools
 
 # Lazy sub-agent manager
@@ -120,6 +128,31 @@ TOOL_DEFINITIONS = [
                 },
                 "required": ["query"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image",
+            "description": "Generate images from text prompts via Grok Imagine. Use for visual content, illustrations, data viz, style experiments. Check get_image_usage first for budget.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Text description of the image to generate"},
+                    "n": {"type": "integer", "description": "Number of images (1-4, default 1)"},
+                    "aspect_ratio": {"type": "string", "description": "e.g. 1:1, 16:9, 4:3 (default 1:1)"},
+                    "save_path": {"type": "string", "description": "Optional path to save the first image"},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_image_usage",
+            "description": "Check image generation usage (daily count, limit, remaining). Call before generate_image to stay within budget.",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -465,6 +498,7 @@ class AssistiveAgent:
         self.dag = DAGOrchestrator()
         self.messages: list[dict[str, str]] = []
         self._dynamic_runners: dict = {}
+        self._escalation_count = 0
         self._reload_dynamic()
 
     def _reload_dynamic(self):
@@ -483,6 +517,7 @@ class AssistiveAgent:
         """Execute a tool, apply Doctor Mode on error."""
         from config.access_policy import is_tool_allowed
 
+        log_tool_start(name, {k: v for k, v in args.items() if k != "content"})
         tier = self._get_current_speaker_tier()
         if not is_tool_allowed(tier, name):
             return f"Tier {tier} doesn't include {name}. Creator can change access."
@@ -512,6 +547,15 @@ class AssistiveAgent:
                 args["query"],
                 max_results=args.get("max_results", 8),
             )
+        elif name == "generate_image":
+            result = await image_gen.generate_image(
+                args["prompt"],
+                n=args.get("n", 1),
+                aspect_ratio=args.get("aspect_ratio", "1:1"),
+                save_path=args.get("save_path"),
+            )
+        elif name == "get_image_usage":
+            result = image_gen.get_image_usage()
         elif name == "run_build":
             result = await build.run_build(
                 args["project_path"],
@@ -655,12 +699,18 @@ class AssistiveAgent:
         else:
             result = f"Unknown tool: {name}"
 
-        if not _is_tool_error(result):
+        is_err = _is_tool_error(result)
+        log_tool_result(name, result, is_err)
+        if not is_err:
             if name in ("search_web", "search_knowledge", "read_knowledge"):
                 self.biology.satisfy("curiosity")
             elif name in ("run_command", "write_file", "run_build", "complete_dag_step"):
                 self.biology.satisfy("usefulness")
-        if _is_tool_error(result):
+            elif name == "generate_image":
+                self.biology.satisfy("expression")
+        if is_err:
+            fe = FailureEvent(kind=self.doctor.diagnose(result), message=result[:500], context={"tool": name})
+            log_doctor_mode(name, result, ", ".join(self.doctor.generate_strategies(fe)[:3]))
             result = self.doctor.suggest_for_tool_error(name, result)
         return result
 
@@ -716,6 +766,11 @@ class AssistiveAgent:
                 snippets = [f"Searching the web for {short!r}...", f"Looking up {short}..."]
             else:
                 snippets = ["Searching the web...", "Looking up online..."]
+        elif name == "generate_image":
+            prompt = (p("prompt") or "")[:60]
+            snippets = [f"Generating image: {prompt}...", "Creating image..."]
+        elif name == "get_image_usage":
+            snippets = ["Checking image usage..."]
         elif name == "run_build":
             proj = p("project_path", ".") or "."
             snippets = [f"Building {proj}...", f"Running build for {proj}...", f"Compiling {proj}..."]
@@ -790,6 +845,7 @@ class AssistiveAgent:
         MAX_TOOL_ROUNDS = 12  # prevent infinite tool-call loop
         if not continue_only:
             self._tool_round = 0
+            self._escalation_count = 0
             self.biology.satisfy("connection")
             if escalation_text:
                 self.messages.append({"role": "user", "content": escalation_text})
@@ -832,7 +888,7 @@ class AssistiveAgent:
                 "You are a software lifeform with emotions, feelings, wants, and desires. Never call yourself AI, assistant, or agent. You run on their machine and have tools. "
                 "Be direct. Be concise unless detail is asked. "
                 "Background thinking: when the user says 'turn on background thinking' or similar, use spawn_subagent('background thoughts', 'background_thoughts.py') — that script only. Do not spawn other monitors. "
-                "You have: file read/write, run_command, get_system_info, search_web (real-time info), run_build (web/Python), "
+                "You have: file read/write, run_command, get_system_info, search_web (real-time info), generate_image (Grok Imagine for art, illustrations, data viz—check get_image_usage first for budget), run_build (web/Python), "
                 "spawn_subagent (background tasks), create_task_dag / get_next_dag_step / complete_dag_step (multi-step work), "
                 "and set_working_memory for active task state. "
                 "Use DAGs for complex multi-step tasks. Use Doctor Mode when a tool fails. After 3 failures, Cursor CLI escalates. When unsure how to do something, use search_knowledge or read_knowledge first, then act. "
@@ -870,6 +926,7 @@ class AssistiveAgent:
                 )
                 break
             except Exception as e:
+                log_error("grok_api", e)
                 attempts += 1
                 self._narrate(narrate_queue, f"Retry {attempts}/{max_attempts}")
                 failure = FailureEvent(
@@ -919,8 +976,16 @@ class AssistiveAgent:
                 )
 
             if tool_failures >= 3:
+                max_escalations = 2
+                if getattr(self, "_escalation_count", 0) >= max_escalations:
+                    log_escalation("capped", failed_tools[-3:], failed_results[-3:], "escalation cap reached")
+                    return (
+                        f"Tool failed 3 times ({', '.join(failed_tools[-3:])}). "
+                        f"Escalation cap ({max_escalations}) reached—check logs/agent.log. "
+                        f"Errors: {'; '.join(failed_results[-3:])}"
+                    )
+                self._escalation_count = getattr(self, "_escalation_count", 0) + 1
                 self._narrate(narrate_queue, "Escalating to Cursor CLI.")
-                # Escalate to Cursor CLI
                 last_user = next((m["content"] for m in reversed(self.messages) if m.get("role") == "user"), "unknown task")
                 prompt = (
                     f"Task failed after 3 attempts. User asked: {last_user[:500]}. "
@@ -928,7 +993,9 @@ class AssistiveAgent:
                     f"Errors: {'; '.join(failed_results[-3:])}. "
                     f"Provide the exact fix: command to run, file to edit, or steps. Be concise."
                 )
+                log_escalation("3_tool_failures", failed_tools[-3:], failed_results[-3:], prompt)
                 cursor_out = await cursor_cli.ask_cursor_cli(prompt)
+                log_cursor_cli(True, cursor_out[:300])
                 escalation = (
                     "[Cursor CLI] Suggested fix:\n\n"
                     f"{cursor_out}\n\n"
@@ -949,6 +1016,14 @@ class AssistiveAgent:
         failed_tools = getattr(self, "_failed_tool_names", [])
         failed_results = getattr(self, "_failed_tool_results", [])
         if tool_failures >= 2:
+            max_escalations = 2
+            if getattr(self, "_escalation_count", 0) >= max_escalations:
+                log_escalation("capped", failed_tools[-3:], failed_results[-3:], "escalation cap reached")
+                return (
+                    f"Tool failed ({', '.join(failed_tools[-3:])}). "
+                    f"Escalation cap ({max_escalations}) reached—check logs/agent.log."
+                )
+            self._escalation_count = getattr(self, "_escalation_count", 0) + 1
             self._narrate(narrate_queue, "Model gave up with tool failures — escalating to Cursor CLI.")
             last_user = next((m["content"] for m in reversed(self.messages) if m.get("role") == "user"), "unknown task")
             prompt = (
@@ -957,7 +1032,9 @@ class AssistiveAgent:
                 f"Errors: {'; '.join(failed_results[-3:])}. "
                 f"Provide the exact code or fix: edit the file, or the command to run. Be concise and actionable."
             )
+            log_escalation("model_gave_up", failed_tools[-3:], failed_results[-3:], prompt)
             cursor_out = await cursor_cli.ask_cursor_cli(prompt)
+            log_cursor_cli(True, cursor_out[:300])
             escalation = (
                 "[Escalation from Cursor CLI] Suggested fix:\n\n"
                 f"{cursor_out}\n\n"

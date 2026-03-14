@@ -145,6 +145,11 @@ When a tool returns an error:
 - Recent thoughts are included in my context
 - When outreach isn't skipped (no recent chat), thought is sent proactively
 
+### Image generation (Grok Imagine)
+- `generate_image(prompt, n, aspect_ratio, save_path)` – text-to-image via xAI
+- `get_image_usage()` – daily quota, remaining; check before generating
+- Usage in `data/image_usage.json`. Limit via `IMAGE_GEN_DAILY_LIMIT` (default 20)
+
 ---
 
 ## 10. Background Thoughts Loop
@@ -207,4 +212,5 @@ OUTPUT
 | Biology state | `data/profiles/{user}/biology_state.json` |
 | Contacts | `data/profiles/{user}/contacts.json` |
 | Access policy | `data/profiles/default/access_policy.json` |
+| Image usage | `data/image_usage.json` |
 | Knowledge base | `knowledge/*.md` |

@@ -45,6 +45,8 @@ A software lifeform powered by Grok 3 (xAI) with full system access, memory, voi
 |------|-------------|
 | `search_web` | Real-time web search |
 | `run_build` | Build web or Python projects (npm/pip) |
+| `generate_image` | Create images from text (Grok Imagine). Art, illustrations, data viz. |
+| `get_image_usage` | Check daily image quota and remaining usage (budget tracking) |
 
 ### Memory & Profile
 
@@ -168,5 +170,13 @@ When a tool fails, they try alternatives. After 3 failures, they escalate to Cur
 | `DISCORD_BOT_TOKEN` | Discord bot (optional) |
 | `DISCORD_OWNER_ID` | Your Discord user ID for DMs (optional) |
 | `CURSOR_API_KEY` | Cursor CLI escalation (optional) |
+| `IMAGE_GEN_DAILY_LIMIT` | Max images per day (default 20). Budget control. |
+| `IMAGE_OUTPUT_DIR` | Where to save generated images (default: `generated_images/` in project). Use `~/Pictures/Adam` etc. |
 
-Get xAI keys at [console.x.ai](https://console.x.ai).
+Images are saved automatically; `generated_images/` is gitignored.
+
+---
+
+## Logs
+
+`logs/agent.log` — Tool calls, results, Doctor Mode, Cursor CLI escalations, errors. Use this to debug when something goes wrong (e.g. image gen timeout, escalation loops). Logs are gitignored.

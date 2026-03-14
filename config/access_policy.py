@@ -63,6 +63,8 @@ DEFAULT_POLICY = {
         "get_next_dag_step",
         "complete_dag_step",
         "send_proactive_message",
+        "generate_image",
+        "get_image_usage",
     ],
     "creator": None,  # full access
 }
