@@ -21,6 +21,8 @@ agent: AssistiveAgent | None = None
 _discord_task: asyncio.Task | None = None
 _background_thoughts_task: asyncio.Task | None = None
 _status_check_task: asyncio.Task | None = None
+_consolidator_task: asyncio.Task | None = None
+_consolidator_stop: asyncio.Event | None = None
 async def _status_check_loop():
     """Periodic self-diagnostic: sub-agent status. Alert only when issues first appear, not every poll."""
     STATUS_INTERVAL = 600  # 10 min
@@ -92,6 +94,64 @@ async def _background_thoughts_loop():
                 print(f"Background thought error: {e}")
 
 
+def _build_consolidator_llm():
+    """Return an async (system, user) -> str function backed by the xAI client.
+
+    The consolidator is decoupled from any specific provider — we inject this
+    closure so unit tests can stub it out without touching HTTP.
+    """
+    from openai import AsyncOpenAI
+
+    from config.settings import XAI_API_KEY, XAI_BASE_URL, XAI_MODEL
+
+    client = AsyncOpenAI(api_key=XAI_API_KEY, base_url=XAI_BASE_URL)
+
+    async def _call(system: str, user: str) -> str:
+        resp = await client.chat.completions.create(
+            model=XAI_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    return _call
+
+
+async def _consolidator_loop(stop_event: asyncio.Event):
+    """Stochastic memory consolidator. Runs decay + LLM consolidation passes
+    against the live agent's profile."""
+    from src.agent.memory_consolidator import ConsolidatorConfig, MemoryConsolidator
+
+    try:
+        llm = _build_consolidator_llm()
+    except Exception as e:
+        try:
+            from src.logging_config import log_error
+            log_error("consolidator_init", e)
+        except Exception:
+            print(f"Consolidator LLM init failed; running decay-only: {e}")
+        llm = None
+
+    consolidator = MemoryConsolidator(
+        user_id="default",
+        config=ConsolidatorConfig(),
+        llm=llm,
+    )
+    try:
+        await consolidator.run_loop(stop_event)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        try:
+            from src.logging_config import log_error
+            log_error("consolidator_loop", e)
+        except Exception:
+            print(f"Consolidator crashed: {e}")
+
+
 async def _run_completion_review(aid: str, task: str, status: str):
     """Trigger Nova to review a completed background task and notify the Creator."""
     global agent
@@ -130,11 +190,14 @@ def _on_subagent_complete(aid: str, task: str, status: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global agent, _discord_task, _background_thoughts_task, _status_check_task
+    global _consolidator_task, _consolidator_stop
     agent = AssistiveAgent(user_id="default")
     from src.tools import subagents
     subagents.set_completion_callback(_on_subagent_complete)
     _background_thoughts_task = asyncio.create_task(_background_thoughts_loop())
     _status_check_task = asyncio.create_task(_status_check_loop())
+    _consolidator_stop = asyncio.Event()
+    _consolidator_task = asyncio.create_task(_consolidator_loop(_consolidator_stop))
     # Start Discord bot (and outreach consumer) if configured
     try:
         from src.discord_bot import set_agent, start_discord_task
@@ -154,6 +217,14 @@ async def lifespan(app: FastAPI):
         _status_check_task.cancel()
         try:
             await _status_check_task
+        except asyncio.CancelledError:
+            pass
+    if _consolidator_task and not _consolidator_task.done():
+        if _consolidator_stop:
+            _consolidator_stop.set()
+        _consolidator_task.cancel()
+        try:
+            await _consolidator_task
         except asyncio.CancelledError:
             pass
     if _discord_task and not _discord_task.done():
@@ -259,6 +330,83 @@ async def api_memory_view():
         "image_usage": image_gen.get_usage_data(),
         "subagents": agent_core._get_subagent_manager().status(),
     }
+
+
+@app.post("/api/memory/remember")
+async def api_memory_remember(
+    category: str = Form(""),
+    fact: str = Form(""),
+    key: str = Form(""),
+):
+    """Manually store a profile fact (always protected)."""
+    if not agent:
+        return JSONResponse({"error": "Agent not ready"}, status_code=503)
+    fact = (fact or "").strip()
+    if not fact:
+        return JSONResponse({"error": "fact is required"}, status_code=400)
+    try:
+        if key:
+            agent.memory.profile.set(
+                key.strip(), fact,
+                category=(category or "general").strip(),
+                source="user", protected=True,
+            )
+            msg = f"remembered (key='{key.strip()}', protected)."
+        else:
+            msg = agent.memory.add_profile_fact(category or "other", fact)
+        return {"ok": True, "message": msg}
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@app.post("/api/memory/forget")
+async def api_memory_forget(key: str = Form(...)):
+    """Soft-delete a profile fact by exact key."""
+    if not agent:
+        return JSONResponse({"error": "Agent not ready"}, status_code=503)
+    ok = agent.memory.profile.delete(key.strip())
+    return {"ok": ok}
+
+
+@app.post("/api/memory/protect")
+async def api_memory_protect(key: str = Form(...), protected: int = Form(1)):
+    """Toggle the protected flag on a profile fact by exact key."""
+    if not agent:
+        return JSONResponse({"error": "Agent not ready"}, status_code=503)
+    ok = agent.memory.profile.protect(key.strip(), protected=bool(int(protected)))
+    return {"ok": ok}
+
+
+@app.post("/api/memory/decay-config")
+async def api_memory_decay_config(
+    half_life_days: float = Form(...),
+    min_confidence: float = Form(...),
+):
+    """Persist decay tuning for the consolidator to pick up next tick."""
+    if not agent:
+        return JSONResponse({"error": "Agent not ready"}, status_code=503)
+    if half_life_days <= 0 or not (0 <= min_confidence <= 1):
+        return JSONResponse(
+            {"error": "half_life_days > 0 and 0 <= min_confidence <= 1"}, status_code=400
+        )
+    agent.memory.state.set("memory.config.half_life_days", half_life_days)
+    agent.memory.state.set("memory.config.min_confidence", min_confidence)
+    return {"ok": True}
+
+
+@app.post("/api/memory/forget-all")
+async def api_memory_forget_all(confirm: str = Form("")):
+    """Wipe ALL profile facts. Requires confirm=yes-i-am-sure."""
+    if not agent:
+        return JSONResponse({"error": "Agent not ready"}, status_code=503)
+    if confirm != "yes-i-am-sure":
+        return JSONResponse({"error": "missing confirm token"}, status_code=400)
+    facts = agent.memory.profile.get_all()
+    n = 0
+    for f in facts:
+        if agent.memory.profile.delete(f.key):
+            n += 1
+    return {"ok": True, "deleted": n}
 
 
 @app.post("/api/tool-approve")
