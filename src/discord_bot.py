@@ -71,6 +71,27 @@ async def _run_discord_bot():
         if not content:
             return
 
+        # Slash-command interception — bypasses the LLM entirely. Same parser
+        # as web/CLI, so behavior matches across surfaces.
+        try:
+            from src.agent import memory_commands
+            if memory_commands.is_command(content):
+                response = memory_commands.handle(content, _agent_ref.memory)
+                if response is not None:
+                    _agent_ref.memory.add_short_term(
+                        f"[Discord – {author_name} said]: {content}"
+                    )
+                    _agent_ref.memory.add_short_term(f"Andrew: {response}")
+                    # Discord 2000-char limit
+                    chunk = response if len(response) <= 1900 else (response[:1897] + "...")
+                    try:
+                        await message.reply(f"```\n{chunk}\n```")
+                    except Exception:
+                        await message.channel.send(f"```\n{chunk}\n```")
+                    return
+        except Exception:
+            pass
+
         # Notify owner: desktop + web
         notifications.emit_notification(
             "discord_message",
