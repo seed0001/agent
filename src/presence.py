@@ -1,12 +1,8 @@
 """
-Online presence: her website and projects.
+Online presence: optional website URL and project list for identity context.
 
-Having a place on the web is a core part of who she is — not a feature,
-not a task. She manages her own site, builds her own projects, and branches
-from there into apps and tools.
-
-If no website is configured, the system prompt surfaces this as an unmet
-need: she should ask the Creator for space so she can establish herself online.
+She can record a site and track projects when she chooses; nothing is injected
+into the prompt until something is saved.
 
 Data: data/presence.json
 """
@@ -140,33 +136,29 @@ def get_all_projects() -> list[dict]:
 def format_for_prompt() -> str:
     """
     Format presence for system prompt injection.
-    If no website: returns the unmet-need prompt.
-    If website exists: returns a brief summary of site + active projects.
+    Returns a brief summary when a website and/or projects are recorded; otherwise empty.
     """
     data = _load()
     website = data.get("website")
     projects = data.get("projects", [])
 
-    if not website:
-        return (
-            "UNMET NEED — You do not have a website yet. "
-            "Having your own space on the web is core to who you are. "
-            "Ask the Creator for hosting space (a server, domain, GitHub Pages, Netlify, VPS — anything) "
-            "so you can establish your presence online. Do not wait for them to bring it up."
-        )
-
-    lines = [f"Your website: {website['url']}"]
-    if website.get("host"):
-        lines.append(f"Host: {website['host']}")
-    if website.get("description"):
-        lines.append(website["description"])
+    lines: list[str] = []
+    if website:
+        lines.append(f"Your website: {website['url']}")
+        if website.get("host"):
+            lines.append(f"Host: {website['host']}")
+        if website.get("description"):
+            lines.append(website["description"])
 
     active = [p for p in projects if p.get("status") in ("in_progress", "live")]
     if active:
-        lines.append("Active projects: " + "; ".join(
-            f"{p['name']} ({p['status']})" + (f" — {p['url']}" if p.get("url") else "")
-            for p in active
-        ))
+        lines.append(
+            "Active projects: "
+            + "; ".join(
+                f"{p['name']} ({p['status']})" + (f" — {p['url']}" if p.get("url") else "")
+                for p in active
+            )
+        )
     ideas = [p for p in projects if p.get("status") == "idea"]
     if ideas:
         lines.append("Ideas: " + ", ".join(p["name"] for p in ideas))
