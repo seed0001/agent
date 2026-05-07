@@ -17,13 +17,14 @@ KNOWLEDGE_DIR = PROJECT_ROOT / "knowledge"
 RESEARCH_OUTPUT_DIR = DATA_DIR / "research_output"
 TRAINING_DATA_DIR = DATA_DIR / "training_data"
 SOUL_TRAINING_DIR = DATA_DIR / "soul_training"
+VOICES_DIR = DATA_DIR / "voices"
 
 # Generated images (gitignored). Override with IMAGE_OUTPUT_DIR env (e.g. ~/Pictures/Adam).
 IMAGE_OUTPUT_DIR = Path(
     os.getenv("IMAGE_OUTPUT_DIR", str(PROJECT_ROOT / "generated_images"))
 ).expanduser().resolve()
 
-for d in (DATA_DIR, MEMORY_DIR, USER_PROFILES_DIR, LOGS_DIR, KNOWLEDGE_DIR, RESEARCH_OUTPUT_DIR, TRAINING_DATA_DIR, SOUL_TRAINING_DIR):
+for d in (DATA_DIR, MEMORY_DIR, USER_PROFILES_DIR, LOGS_DIR, KNOWLEDGE_DIR, RESEARCH_OUTPUT_DIR, TRAINING_DATA_DIR, SOUL_TRAINING_DIR, VOICES_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # xAI Grok
@@ -32,7 +33,11 @@ XAI_BASE_URL = "https://api.x.ai/v1"
 XAI_MODEL = os.getenv("XAI_MODEL", "grok-3")
 
 # Voice
-EDGE_TTS_VOICE = "en-GB-RyanNeural"  # British male - Ryan
+EDGE_TTS_VOICE = "en-GB-RyanNeural"  # British male - Ryan (fallback)
+TTS_ENGINE = os.getenv("TTS_ENGINE", "edge").strip().lower()  # "lux" | "edge"
+LUX_VOICE_REF = os.getenv("LUX_VOICE_REF", "edward").strip()  # name in data/voices/ or full path
+LUX_DEVICE = os.getenv("LUX_DEVICE", "cpu").strip().lower()  # "cpu" | "cuda" (ROCm shim)
+LUX_NUM_STEPS = int(os.getenv("LUX_NUM_STEPS", "4"))  # 3-4 best speed/quality tradeoff
 
 # Web (0.0.0.0 = accessible from phone on local network)
 WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0")
