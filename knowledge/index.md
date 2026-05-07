@@ -21,7 +21,7 @@ Use `search_knowledge(query)` to find how-tos, or `read_knowledge(topic)` to rea
 - subagents – spawn_subagent, subagent_status, get_subagent_output, acknowledge_background_completion
 - training_data – generate instruction fine-tuning data locally via Ollama (scripts/generate_training_data.py)
 - dag – create_task_dag, multi-step orchestration
-- memory – set_working_memory
+- memory – the SQLite-backed memory system: 5 layers (immediate / short-term / working / episodic / profile facts), exponential decay + reinforcement + protection, sessions, background consolidator, semantic search, slash commands the Creator can use (`/memory`, `/remember`, `/forget`, `/protect`, etc.), what tools I can call (`update_profile`, `set_working_memory`)
 - system – get_system_info
 - ollama – launch Ollama model selector GUI
 - dynamic_tools – suggest, approve, implement new tools (add_suggested_tools, get_tool_queue)

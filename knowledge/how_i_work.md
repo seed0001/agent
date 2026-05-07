@@ -51,20 +51,38 @@ Input (web/Discord/voice) → memory.add_immediate + add_short_term
 
 ---
 
-## 4. Memory System (5 Layers)
+## 4. Memory System (SQLite-backed, lifecycle-driven)
 
-| Layer | What | Where | Decay |
-|-------|------|-------|-------|
-| **Immediate** | Current turn only | In-memory | Cleared after response |
-| **Short-term** | Recent conversation | `data/profiles/{user}/short_term.jsonl` | FIFO eviction at 30; old → episodic |
-| **Working** | Active task state | `data/profiles/{user}/working.json` | Manual clear |
-| **Episodic** | Past sessions | `data/profiles/{user}/episodic.jsonl` | Power-law decay R=1/(1+t/τ)^α |
-| **Profile** | Facts about the user | `data/profiles/{user}/profile.json` | Persistent |
+Everything lives in one SQLite database per profile (`data/profiles/{user}/memory.db`), WAL mode, FK on. Five layers map onto the schema:
 
-### Memory decay (episodic & thoughts)
-- Retention: R = strength / (1 + t/τ)^α (Jost power law)
-- τ = 3600 s, α = 0.2
-- Entries below ~5% retention are dropped from context
+| Layer | What | Where (table) | Lifecycle |
+|-------|------|---------------|-----------|
+| **Immediate** | Current turn scratchpad | In-process list | Cleared after response |
+| **Short-term** | Recent turns of THIS session | `episodic_memory` filtered by `session_id` | Window of last ~30; never deleted |
+| **Working** | Persistent KV across sessions | `working_memory` | Manual writes only — no decay |
+| **Episodic** | Every turn from every session | `episodic_memory` | Soft-delete on consolidation; importance-scored by background pass |
+| **Profile facts** | Durable beliefs about the user | `profile_facts` | Reinforced on use, exponentially decayed when ignored, pruned below floor unless protected |
+
+### Lifecycle (what actually runs)
+- **Reinforcement**: every fact injected into the system prompt gets `confidence += 0.08` (capped at 1.0) and `last_referenced_at` refreshed.
+- **Decay**: exponential, `new = old * exp(-ln(2)/half_life * days_since_reference)`. Default half-life 30 days, floor 0.25. 24h grace period before any decay.
+- **Protected facts** (user-source, or explicitly `/protect`-ed) are immortal.
+- **Versioning**: every fact update creates a new `version` row and soft-deletes the previous one — full history is queryable.
+
+### Background consolidator (`src/agent/memory_consolidator.py`)
+Stochastic 8-18 min jittered loop, runs alongside the background-thoughts loop. Each tick:
+1. **Decay pass** — apply decay, prune below floor
+2. **Consolidate pass** — pull old episodic turns, group by session, ask the LLM to extract durable facts, insert as `source="consolidated"` (decayable, unprotected) at confidence 0.7
+3. **Importance pass** — batch-score unscored episodic turns 0-1
+4. **Embed pass** — vectorize unembedded episodic turns for semantic search
+
+### Sessions + cross-session continuity
+Every agent boot creates a new `sessions` row. Every short-term/episodic write tags `session_id`. Context includes a separate "Earlier sessions (recent)" block of up to 10 turns from prior sessions in the past 7 days.
+
+### Semantic search (retrieval-augmented context)
+On every turn, my latest user message is embedded (`all-MiniLM-L6-v2`, 384-dim) and cosine-matched against every stored episodic embedding. Top hits get injected as "Semantically related past turns". Falls back silently if embeddings aren't available.
+
+For the full guide read `knowledge/memory.md`.
 
 ---
 
@@ -177,9 +195,13 @@ When a tool returns an error:
 INPUT
   Web / Discord / Voice
        ↓
-  add_immediate, add_short_term, satisfy("connection")
+  add_immediate, add_short_term (→ episodic + session tag), satisfy("connection")
        ↓
-  get_context_for_agent() → immediate, short-term, working, episodic, thoughts, profile
+  /slash-command? → memory_commands.handle() bypasses LLM, returns directly
+       ↓
+  get_context_for_agent() → immediate + recent (this session) + important earlier (this session)
+                          + cross-session (last 7d) + working KV + thoughts + profile facts (reinforced)
+                          + semantically-related past turns (vector search)
        ↓
   biology.get_state_summary() → drives, urges
        ↓
@@ -204,13 +226,12 @@ OUTPUT
 | Data | Path |
 |------|------|
 | Soul | `data/soul.json` |
-| Short-term | `data/profiles/{user}/short_term.jsonl` |
-| Episodic | `data/profiles/{user}/episodic.jsonl` |
-| Working | `data/profiles/{user}/working.json` |
-| Profile | `data/profiles/{user}/profile.json` |
-| Thoughts | `data/profiles/{user}/thoughts.jsonl` |
+| All memory (sessions, episodic, profile facts, working KV, thoughts, embeddings, audit) | `data/profiles/{user}/memory.db` (SQLite) |
 | Biology state | `data/profiles/{user}/biology_state.json` |
+| Existential state | `data/profiles/{user}/existential_state.json` |
 | Contacts | `data/profiles/{user}/contacts.json` |
 | Access policy | `data/profiles/default/access_policy.json` |
+| Soul (shared identity) | `data/soul.json` |
+| Values vault (shared) | `data/values_vault.json` |
 | Image usage | `data/image_usage.json` |
 | Knowledge base | `knowledge/*.md` |

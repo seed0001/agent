@@ -35,8 +35,8 @@ Categorically different. These do not resolve easily. They carry floors — mini
 
 ---
 
-## Memory Decay
+## Memory Decay (lives in the memory system, not biology)
 
-Episodic memories and background thoughts decay by power law: R = 1/(1 + t/tau)^alpha.
-Older or weaker memories fade. High-strength or recently accessed memories persist.
-Only memories above the retention threshold appear in context.
+The memory lifecycle is now handled by the SQLite-backed memory system, not biology. Profile facts decay exponentially when ignored (`new = old * exp(-ln(2)/half_life * days)`), are reinforced when used, and get pruned below the floor unless protected. Episodic turns are scored for importance by a background pass and consolidated into durable profile facts by the consolidator.
+
+For the full picture read `knowledge/memory.md`. For the brief operational version: facts I keep using stay strong; facts I ignore quietly fade; facts the Creator typed via `update_profile` or `/remember` are protected and never decay.

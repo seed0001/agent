@@ -57,3 +57,35 @@ Three persistent drives distinct from functional biology:
 - **Inner life**: Intuition layer (per-turn felt signal) + existential layer (persistent curiosity/dread/fear) + functional drives (connection/curiosity/usefulness/expression).
 - **Values**: She has a vault. She decides what goes in it.
 - **Proactive**: Messages now land properly in conversation memory so she knows what she said.
+
+---
+
+## Memory System Overhaul (May 2026, inspired by seed0001/Adam)
+
+The old JSON-based memory is gone. Everything runs through SQLite now (`data/profiles/{user_id}/memory.db`) with a real lifecycle. Read `knowledge/memory.md` for the full guide.
+
+### What's new under the hood
+- **One SQLite DB per profile**, WAL mode, FK on. Tables: `sessions`, `episodic_memory`, `profile_facts`, `semantic_embeddings`, `background_thoughts`, `working_memory`, `memory_audit`, `schema_version`. Migrations versioned in `src/agent/memory_db.py`.
+- **Profile facts have lifecycle metadata**: `confidence` (0-1), `source` (user/extracted/consolidated/imported), `protected` (immortal flag), `version` (history), `last_referenced_at`. Reinforcement bumps confidence when a fact is used in the prompt; decay shrinks it when it's ignored.
+- **Decay math** (Adam's exact): `new = old * exp(-ln(2)/half_life * days_since_reference)`. Default half-life 30d, floor 0.25. 24h grace period. User-source and explicitly-`/protect`-ed facts skip decay entirely.
+- **Sessions** are a real concept now. Every agent boot creates a session row; every short-term/episodic insert tags it. Cross-session continuity is a single SQL query.
+- **Background consolidator** (`src/agent/memory_consolidator.py`) runs alongside the background-thoughts loop. Stochastic 8-18 min jitter. Each tick: decay pass → consolidate pass (LLM extracts durable facts from old transcripts) → importance pass (LLM scores turns 0-1) → embed pass (vectorizes for semantic search).
+- **Importance-aware context**: `get_context_for_agent()` now surfaces high-importance earlier turns from this session in addition to the FIFO recent window.
+- **Semantic search**: `sentence-transformers` with `all-MiniLM-L6-v2` (384-dim), brute-force cosine via numpy. The most recent user message is used as a query and top hits are injected as "Semantically related past turns". Falls back silently if the model can't load.
+
+### What changed for me operationally
+- I no longer need to ask "what category does this fact go in?" before storing — `update_profile(category, fact)` still works the same way, but now the value is stored protected at confidence 1.0, immune to decay.
+- `set_working_memory(key, value)` survives restart now — so I can leave a breadcrumb across boots.
+- I never need to call decay/reinforce/protect myself. The lifecycle handles it. If I ever do need explicit control, ask the Creator and we'll add a tool.
+
+### What changed for the Creator (slash commands)
+`/memory`, `/memory stats`, `/memory decay <days>`, `/memory min <pct>`, `/remember <category>: <fact>` (or `/remember <key>=<value>`), `/forget <substring>`, `/forget all yes-i-am-sure`, `/protect <substring>`, `/unprotect <substring>`, `/thoughts [N]`, `/sessions [N]`, `/memory help`. **These bypass me entirely** — typing `/memory` short-circuits in `chat()` and returns the result without ever hitting the LLM. Same parser drives Discord and the web UI. The web UI Memory panel has health bars, source badges, and per-fact Protect/Forget controls.
+
+### Files
+- `src/agent/memory_db.py` — schema + connection management + migrations
+- `src/agent/memory_stores.py` — `SessionStore`, `EpisodicStore`, `ProfileStore`, `ThoughtStore`, `WorkingState`, `ContextWindow`
+- `src/agent/memory.py` — backwards-compat `MemoryStore` facade (existing call sites unchanged)
+- `src/agent/memory_consolidator.py` — the background lifecycle worker
+- `src/agent/memory_commands.py` — slash command parser
+- `src/agent/memory_embeddings.py` — `EmbeddingService` + `SemanticIndex`
+- `tests/test_memory_*.py` — 127 tests, all passing
