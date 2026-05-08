@@ -167,7 +167,7 @@ async def _run_completion_review(aid: str, task: str, status: str):
             f"Your task: call get_subagent_output('{aid}'), review the output, verify it looks OK, then send_proactive_message to the Creator with a brief summary. "
             "Call acknowledge_background_completion when done."
         )
-        await agent.chat(msg)
+        await agent.chat(msg, speaker_discord_id=None)
     except Exception as e:
         try:
             from src.logging_config import log_error
@@ -263,7 +263,11 @@ async def _stream_chat_generator(message: str):
             agent.memory.set_working("current_speaker_discord_id", None)
             from src.agent.soul import get_context_for_speaker
             ctx = get_context_for_speaker(is_web=True)
-            result = await agent.chat(ctx + message, narrate_queue=queue)
+            result = await agent.chat(
+                ctx + message,
+                narrate_queue=queue,
+                speaker_discord_id=None,
+            )
             await queue.put({"type": "response", "text": result})
         except Exception as e:
             await queue.put({"type": "error", "text": str(e)})

@@ -9,6 +9,9 @@ These tools were rebuilt in May 2026 after I kept reporting "saved!" on writes t
 - `write_file` **verifies** after writing: it stats the destination and confirms the byte count matches what I sent. If it doesn't match, I get `Error: ... did not verify`, not a false success.
 - All success and error messages **echo the absolute path**. When I tell the user where a file lives, I quote what `write_file` returned to me — never the relative name I passed in.
 - A new `verify_file_exists` tool lets me confirm a file is really there before I claim it is.
+- The core now has two reliability guardrails around my output:
+  - **Tool invocation recovery** normalizes safe near-miss tool names (`Write_file`, `write file`, `write_file.`) and recovers explicit text-form calls like `Save to C:\path\file.txt: content` into the real structured tool call.
+  - **File-claim verification** checks my final reply. If I say I saved/created/wrote a file without same-turn `write_file` or `verify_file_exists` evidence, the reply is corrected before it reaches Travis.
 
 ---
 
@@ -24,6 +27,8 @@ These tools were rebuilt in May 2026 after I kept reporting "saved!" on writes t
 - Returns `Error: ...` with the resolved absolute path and the specific failure (permission, disk full, target is a directory, parent missing, etc.) on failure.
 
 **Critical rule:** when I tell the user a file was saved, I quote the absolute path from the success message. Never the relative path I passed in.
+
+**Even more critical:** I do not claim a file was saved just because I wrote words that sound like a tool call. Plain text such as `write_file`, `Write_file`, `write file`, or `Save to ...` is only recoverable when the core parser catches it and actually runs the real tool. Success still requires `Written and verified: ...`.
 
 **Examples:**
 ```
@@ -62,6 +67,35 @@ write_file("projects/schedule.txt", "...")
 ```
 
 If verify_file_exists comes back NOT FOUND or with a smaller byte count, I do NOT tell the user it's saved. I report the failure and try again.
+
+---
+
+## Tool invocation recovery
+
+The preferred path is still a real structured function call with the exact registered tool name and JSON arguments.
+
+If I fail that and output a safe near-miss, the core attempts recovery:
+
+```
+Write_file     → write_file
+write file     → write_file
+write_file.    → write_file
+check file exists → verify_file_exists
+open file      → read_file
+run shell      → run_command
+```
+
+The core can also recover explicit text-form calls:
+
+```
+Save to C:\Users\aztre\Desktop\agent\andrew's projects\note.txt: hello
+  → write_file(path="C:\Users\aztre\Desktop\agent\andrew's projects\note.txt", content="hello")
+
+Check if file exists at C:\Users\aztre\Desktop\agent\andrew's projects\note.txt
+  → verify_file_exists(path="C:\Users\aztre\Desktop\agent\andrew's projects\note.txt")
+```
+
+This is a backup, not permission to be sloppy. The recovery layer does **not** trust narrative claims like "I've saved the file." Those still need real tool evidence.
 
 ---
 

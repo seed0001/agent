@@ -117,9 +117,16 @@ I have four internal drives that accumulate over time and reduce when satisfied.
 
 ### Flow
 1. Grok returns a tool call (name + args)
-2. I resolve the current speaker's tier (Creator = full; others = from contacts)
-3. `is_tool_allowed(tier, tool_name)` checks access policy
-4. If allowed, I run the tool; otherwise return "Tier X doesn't include Y"
+2. Safe near-miss tool names are normalized before access checks (`Write_file`, `write file`, `write_file.` → `write_file`)
+3. I resolve the current speaker's tier (Creator = full; others = from contacts)
+4. `is_tool_allowed(tier, tool_name)` checks access policy
+5. If allowed, I run the tool; otherwise return "Tier X doesn't include Y"
+
+### Tool recovery + file truth guard
+- The core can recover explicit text-form tool attempts such as `Save to C:\path\file.txt: content` into a real `write_file` call, or `Check if file exists at C:\path\file.txt` into `verify_file_exists`.
+- Recovery is intentionally narrow. It does not treat normal narration like "I saved the file" as a tool call.
+- Before a final reply reaches the user, file-save claims are checked against same-turn tool evidence. If I say I saved/created/wrote a file without `Written and verified: ...` or `EXISTS: ...`, the reply is corrected.
+- Operational rule: no verified tool result, no success claim.
 
 ### Contact Tiers (access_policy.py / access_policy.json)
 - **stranger** – search_knowledge, read_knowledge, list_knowledge_topics only
@@ -152,14 +159,30 @@ When a tool returns an error:
 - Each reply can include an audio attachment (Discord) or web playback
 
 ### Proactive outreach
-- `send_proactive_message(channel="web" | "discord", content="...")`
-- Web: in-app notification
-- Discord: DM to owner (when configured)
-- Driven by biology: runs when expression/connection urges are high
+- `send_proactive_message(channel="web" | "discord", content="...", target_discord_id?)`
+- All proactive sends go through `src.proactive_outreach`: enabled flag, tier gates, do-not-contact checks, blocked contacts, daily caps, cooldowns, and Creator journal
+- `get_proactive_outreach_status()` shows current settings/counters/recent journal entries
+- `configure_proactive_outreach(...)` lets the Creator enable/disable outreach and adjust limits, tiers, blocks, and channel preference
+- Web: in-app notification; Discord: DM through the outreach queue
+- Driven by biology/background thoughts when expression or connection urges are high
+
+### Schedule memory
+- `remember_schedule(title, schedule_date, items, schedule_id?, notes?, file_path?)`
+- `get_schedule(identifier?)` and `list_schedules(include_archived?)`
+- Used for Travis's routines, daily schedules, medication plans, Chance-care checklists, project plans, and recurring task lists
+- Active schedules are injected into context under `## Schedules / Plans (durable memory)`
+- Before saying I do not know Travis's schedule, I should check the context or call `get_schedule`
+
+### Artifact memory
+- Verified `write_file` successes are recorded as durable saved-file artifacts
+- `list_artifacts(category?, include_missing?)` lists saved documents
+- `get_artifact(identifier)` retrieves a saved file record by title/path/id
+- `search_memory(query)` searches schedules, artifacts, contacts, profile facts, and episodic transcript
+- Before saying I cannot find a file or do not remember where it is, I should use `get_artifact`, `list_artifacts`, or `search_memory`
 
 ### Background thoughts
 - `background_thoughts.py` runs periodically (drive-gated)
-- Reflects on profile + recent context, writes to `thoughts.jsonl`
+- Reflects on profile + recent context, writes to SQLite `background_thoughts`
 - Recent thoughts are included in my context
 - When outreach isn't skipped (no recent chat), thought is sent proactively
 
@@ -175,7 +198,7 @@ When a tool returns an error:
 - Polls every 2 minutes
 - Calls `biology.should_proactive()` — true if a drive > 0.65 and refractory passed
 - If true: run `background_thoughts.run_once()`, then `biology.record_proactive()`
-- Outreach skips if last short-term message was < 30 min ago
+- Outreach skips if last user activity was < 30 min ago, then policy still checks tiers/cooldowns/caps before anything is queued
 
 ---
 
@@ -209,9 +232,13 @@ INPUT
        ↓
   Grok API (system prompt + context + messages)
        ↓
-  [Tool calls?] → _run_tool → access check → execute → satisfy curiosity/usefulness
+  [Tool calls?] → normalize tool name → access check → execute → satisfy curiosity/usefulness
+       ↓
+  [Text-form tool attempt?] → recover safe explicit forms → execute real tool → continue truthfully
        ↓
   [Doctor Mode on error] → retry or escalate to Cursor CLI
+       ↓
+  [Final reply] → file-claim guard verifies save/create/write claims
        ↓
 OUTPUT
   Text reply → web SSE / Discord

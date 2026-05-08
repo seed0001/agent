@@ -318,17 +318,14 @@ async def run_once(user_id: str = "default") -> str:
         return f"[not sent: user active {int(seconds)}s ago] {thought}"
 
     try:
-        from src import notifications
+        from src.proactive_outreach import maybe_queue_proactive_outreach
 
-        title = (agent_name or "Software Lifeform").strip()
-        notifications.emit_notification("proactive", title, thought, {"content": thought})
-
-        from config.settings import DISCORD_OWNER_ID
-
-        if DISCORD_OWNER_ID:
-            from src.outreach import queue_outreach
-
-            queue_outreach("discord", thought, target_user_id=DISCORD_OWNER_ID)
+        decision = maybe_queue_proactive_outreach(
+            thought,
+            trigger_reason="background thought: connection/expression drive",
+        )
+        if decision.get("status") != "queued":
+            return f"[not sent: {decision.get('reason') or 'outreach policy blocked'}] {thought}"
     except Exception:
         pass
 

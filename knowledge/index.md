@@ -12,8 +12,9 @@ Use `search_knowledge(query)` to find how-tos, or `read_knowledge(topic)` to rea
 - values_vault – her values store: add_to_values_vault, remove_from_values_vault, read_values_vault
 - presence – her website and projects: set_website, get_website_status, add_project, update_project, remove_project
 - self_model – proactive outreach, background thoughts, how the Creator reaches her
+- proactive_outreach – autonomous outreach policy: triggers, tier gates, cooldowns, daily caps, contact selection, Creator journal, and oversight tools
 - swarm – what the swarm is, when to use it, local vs cloud mode, swarm_on_problem tool
-- files – read_file, write_file, list_dir
+- files – read_file, write_file, list_dir, verify_file_exists, tool invocation recovery, and the file-claim truth guard
 - processes – list_processes, is_process_running
 - commands – run_command
 - search – search_web
@@ -22,6 +23,8 @@ Use `search_knowledge(query)` to find how-tos, or `read_knowledge(topic)` to rea
 - training_data – generate instruction fine-tuning data locally via Ollama (scripts/generate_training_data.py)
 - dag – create_task_dag, multi-step orchestration
 - memory – the SQLite-backed memory system: 5 layers (immediate / short-term / working / episodic / profile facts), exponential decay + reinforcement + protection, sessions, background consolidator, semantic search, slash commands the Creator can use (`/memory`, `/remember`, `/forget`, `/protect`, etc.), what tools I can call (`update_profile`, `set_working_memory`)
+- schedule_memory – durable schedules/routines/checklists; remember_schedule, get_schedule, list_schedules; May 8 Travis morning schedule reconstruction
+- artifact_memory – durable saved-file records; list_artifacts, get_artifact, search_memory; automatic tracking after verified write_file
 - system – get_system_info
 - ollama – launch Ollama model selector GUI
 - dynamic_tools – suggest, approve, implement new tools (add_suggested_tools, get_tool_queue)

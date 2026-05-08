@@ -319,6 +319,22 @@ class MemoryStore:
             for k, v in kv.items():
                 parts.append(f"- {k}: {v}")
 
+        try:
+            from src.schedule_memory import format_for_context as _schedule_context
+            schedule_block = _schedule_context(limit=3)
+        except Exception:
+            schedule_block = ""
+        if schedule_block:
+            parts.append("\n" + schedule_block)
+
+        try:
+            from src.artifact_memory import format_for_context as _artifact_context
+            artifact_block = _artifact_context(limit=8)
+        except Exception:
+            artifact_block = ""
+        if artifact_block:
+            parts.append("\n" + artifact_block)
+
         recent_thoughts = self.thoughts.get_recent(limit=8, delivered_only=False)
         if recent_thoughts:
             parts.append("\n## Your recent background thoughts")

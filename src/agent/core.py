@@ -1,7 +1,10 @@
 """Core agent: Grok 3 client, tool routing, Doctor Mode integration."""
 import asyncio
+from contextvars import ContextVar
 import json
+from pathlib import Path
 import random
+import re
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -26,6 +29,16 @@ from src.tools.dynamic_loader import load_dynamic_tools
 
 # Lazy sub-agent manager
 _subagent_manager: subagents.SubAgentManager | None = None
+
+# Speaker identity must be task-local. The old implementation read
+# current_speaker_discord_id from shared working memory, so a Discord message
+# could overwrite a web request's speaker while the web request was still
+# waiting on the LLM/tool loop.
+_current_speaker_discord_id: ContextVar[str | None] = ContextVar(
+    "current_speaker_discord_id",
+    default=None,
+)
+_SPEAKER_UNSET = object()
 
 
 def _get_subagent_manager() -> subagents.SubAgentManager:
@@ -545,6 +558,103 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "remember_schedule",
+            "description": (
+                "Store or replace a durable schedule/task plan. Use this whenever Travis "
+                "builds a routine, daily schedule, checklist, or plan that must survive restart."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "schedule_date": {"type": "string", "description": "ISO date like 2026-05-08"},
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                                "time": {"type": "string"},
+                                "status": {"type": "string"},
+                                "notes": {"type": "string"},
+                            },
+                            "required": ["text"],
+                        },
+                    },
+                    "schedule_id": {"type": "string"},
+                    "notes": {"type": "string"},
+                    "file_path": {"type": "string"},
+                },
+                "required": ["title", "items"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_schedule",
+            "description": "Retrieve a durable schedule by schedule id or ISO date. Empty identifier means today's schedule.",
+            "parameters": {
+                "type": "object",
+                "properties": {"identifier": {"type": "string"}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_schedules",
+            "description": "List durable schedules and task plans Andrew knows about.",
+            "parameters": {
+                "type": "object",
+                "properties": {"include_archived": {"type": "boolean"}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_artifacts",
+            "description": "List saved files/documents Andrew has durable verified records for.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string"},
+                    "include_missing": {"type": "boolean"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_artifact",
+            "description": "Retrieve one saved file/document artifact by id, title, or path substring.",
+            "parameters": {
+                "type": "object",
+                "properties": {"identifier": {"type": "string"}},
+                "required": ["identifier"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_memory",
+            "description": "Search durable memory across schedules, saved artifacts, contacts, profile facts, and episodic transcript. Use before saying you do not remember something.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_contact",
             "description": "Store or update info about a contact (friend, Discord user, etc.). Use when someone shares their name, location, interests, email. Only the Creator can set tier. Tiers: stranger, friend, good_friend, best_friend, creator.",
             "parameters": {
@@ -553,10 +663,13 @@ TOOL_DEFINITIONS = [
                     "identifier": {"type": "string", "description": "Web user identifier, or empty for Discord"},
                     "discord_id": {"type": "string", "description": "Discord user ID when talking on Discord"},
                     "name": {"type": "string"},
+                    "display_name": {"type": "string"},
                     "location": {"type": "string"},
                     "interests": {"type": "string"},
                     "email": {"type": "string"},
                     "notes": {"type": "string"},
+                    "preferred_channel": {"type": "string", "enum": ["discord", "web"]},
+                    "do_not_contact": {"type": "boolean"},
                     "tier": {"type": "string", "enum": ["stranger", "friend", "good_friend", "best_friend", "creator"], "description": "Trust tier. Only Creator can change this."},
                 },
                 "required": [],
@@ -614,7 +727,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "send_proactive_message",
-            "description": "Send a proactive message. Use when you have something concrete: an observation, a question, a heads-up, or a call to action. No fluff. Channel: discord (DM) or web (in-app notification).",
+            "description": "Send a proactive message through the proactive outreach policy. Use when you have something concrete: an observation, a question, a heads-up, or a call to action. No fluff. Enforces tier, cooldown, daily cap, blocked contacts, and logs to the Creator journal.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -627,6 +740,37 @@ TOOL_DEFINITIONS = [
                     "target_discord_id": {"type": "string", "description": "Discord user ID for DM (optional; defaults to owner)"},
                 },
                 "required": ["channel", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_proactive_outreach_status",
+            "description": "Show proactive outreach settings, contact send counters, cooldowns, and the journal path.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "configure_proactive_outreach",
+            "description": "Creator oversight for proactive outreach. Enable/disable it and adjust frequency/tier/contact/channel restrictions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "enabled": {"type": "boolean"},
+                    "max_per_contact_per_day": {"type": "integer", "minimum": 0},
+                    "cooldown_minutes": {"type": "integer", "minimum": 0},
+                    "allowed_tiers": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["stranger", "friend", "good_friend", "best_friend", "creator"]},
+                    },
+                    "blocked_contact_ids": {"type": "array", "items": {"type": "string"}},
+                    "preferred_channel": {"type": "string", "enum": ["discord", "web"]},
+                    "fallback_to_creator_web": {"type": "boolean"},
+                },
+                "required": [],
             },
         },
     },
@@ -643,6 +787,226 @@ def _is_tool_error(result: str) -> bool:
     """Check if tool result indicates failure."""
     r = (result or "").strip().lower()
     return r.startswith("error") or "error:" in r or "not found" in r[:100]
+
+
+_SAVE_CLAIM_RE = re.compile(
+    r"\b("
+    r"i\s+)?("
+    r"saved|created|wrote|written|generated|placed|put|made"
+    r")\b.{0,140}\b("
+    r"file|document|doc|prompt|script|report|text file|\.txt|\.py|\.md"
+    r")\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\[^`\"\n\r<>|]+")
+
+
+def _extract_windows_paths(text: str) -> list[str]:
+    paths: list[str] = []
+    for match in _WINDOWS_PATH_RE.finditer(text or ""):
+        raw = match.group(0).strip()
+        raw = raw.rstrip(".,;:!?) ]}")
+        if raw and raw not in paths:
+            paths.append(raw)
+    return paths
+
+
+def _verified_file_tool_results(tool_results: list[dict[str, str]]) -> list[str]:
+    verified: list[str] = []
+    for item in tool_results:
+        result = item.get("result", "")
+        if result.startswith("Written and verified: "):
+            path = result[len("Written and verified: "):].rsplit(" (", 1)[0]
+            verified.append(path)
+        elif result.startswith("EXISTS: "):
+            path = result[len("EXISTS: "):].rsplit(" (", 1)[0]
+            verified.append(path)
+    return verified
+
+
+def _guard_unverified_file_claims(content: str, tool_results: list[dict[str, str]]) -> str:
+    """Correct final answers that claim a file save without tool evidence.
+
+    The write tool may be reliable, but the model can still *say* it saved a
+    file without calling the tool. This guard is intentionally conservative and
+    only fires on save/create/write-style claims.
+    """
+    if not content or not _SAVE_CLAIM_RE.search(content):
+        return content
+
+    verified_this_turn = _verified_file_tool_results(tool_results)
+    claimed_paths = _extract_windows_paths(content)
+    missing_paths = [p for p in claimed_paths if not Path(p).expanduser().exists()]
+
+    if missing_paths:
+        correction = (
+            "\n\nCorrection: I need to be precise. I claimed a file was saved, "
+            "but I cannot verify the following path exists: "
+            + "; ".join(missing_paths)
+            + ". Treat the save as failed until I run write_file and get "
+            "'Written and verified' for the exact path."
+        )
+        return content + correction
+
+    if not verified_this_turn:
+        extra = ""
+        if claimed_paths:
+            existing = [p for p in claimed_paths if Path(p).expanduser().exists()]
+            if existing:
+                extra = " The path exists on disk, but I did not create or verify it in this turn: " + "; ".join(existing) + "."
+        correction = (
+            "\n\nCorrection: I do not have a verified write_file or "
+            "verify_file_exists result from this turn, so I should not claim "
+            "that I just saved or created the file."
+            + extra
+        )
+        return content + correction
+
+    return content
+
+
+_TOOL_NAME_ALIASES = {
+    "writefile": "write_file",
+    "savefile": "write_file",
+    "createfile": "write_file",
+    "verifyfileexists": "verify_file_exists",
+    "verifyfile": "verify_file_exists",
+    "checkfileexists": "verify_file_exists",
+    "confirmfile": "verify_file_exists",
+    "confirmpath": "verify_file_exists",
+    "readfile": "read_file",
+    "openfile": "read_file",
+    "getcontent": "read_file",
+    "getfilecontent": "read_file",
+    "runcommand": "run_command",
+    "executecommand": "run_command",
+    "runshell": "run_command",
+    "performcommand": "run_command",
+    "spawnsubagent": "spawn_subagent",
+    "startbackgroundtask": "spawn_subagent",
+    "launchsubagent": "spawn_subagent",
+}
+
+
+def _tool_name_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def _normalize_tool_name(name: str) -> str:
+    """Normalize safe near-miss tool names to registered function names."""
+    return _TOOL_NAME_ALIASES.get(_tool_name_key(name), name)
+
+
+def _clean_recovered_arg(value: str) -> str:
+    value = (value or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"', "`"):
+        value = value[1:-1].strip()
+    return value.rstrip()
+
+
+def _clean_recovered_path(value: str) -> str:
+    return _clean_recovered_arg(value).rstrip(".,;:!?) ]}")
+
+
+_RECOVERABLE_TEXT_TOOL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "write_file",
+        re.compile(r"\bwrite[_\s.-]*file\s+(?:at\s+)?(?P<path>.+?)\s+with\s+content\s+(?P<content>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "write_file",
+        re.compile(r"\bsave\s+to\s+(?P<path>.+?):\s+(?P<content>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "write_file",
+        re.compile(r"\bcreate\s+file\s+(?P<path>.+?)\s+containing\s+(?P<content>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "verify_file_exists",
+        re.compile(r"\bcheck\s+if\s+file\s+exists\s+at\s+(?P<path>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "verify_file_exists",
+        re.compile(r"\bconfirm\s+file\s+at\s+(?P<path>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "verify_file_exists",
+        re.compile(r"\bverify\s+path\s+(?P<path>.+?)\s+exists\b", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "read_file",
+        re.compile(r"\bread\s+file\s+from\s+(?P<path>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "read_file",
+        re.compile(r"\bget\s+content\s+of\s+(?P<path>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "read_file",
+        re.compile(r"\bopen\s+file\s+at\s+(?P<path>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "run_command",
+        re.compile(r"\bexecute\s+command\s*:\s*(?P<cmd>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "run_command",
+        re.compile(r"\brun\s+shell\s*:\s*(?P<cmd>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "run_command",
+        re.compile(r"\bperform\s+command\s+(?P<cmd>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "spawn_subagent",
+        re.compile(r"\bspawn\s+subagent\s+for\s+(?P<task>.+?)\s+with\s+script\s+(?P<script_path>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "spawn_subagent",
+        re.compile(r"\bstart\s+background\s+task\s+(?P<task>.+?)\s+using\s+(?P<script_path>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+    (
+        "spawn_subagent",
+        re.compile(r"\blaunch\s+subagent\s+(?P<task>.+?)\s+at\s+(?P<script_path>.+)", re.IGNORECASE | re.DOTALL),
+    ),
+]
+
+
+def _recover_text_tool_call(content: str) -> dict[str, Any] | None:
+    """Recover explicit text-form tool calls without trusting narration.
+
+    This catches requests like "Save to C:\\x.txt: hello". It deliberately does
+    not recover vague claims such as "I saved the file" because those may be
+    normal prose, not an attempted tool invocation.
+    """
+    text = (content or "").strip()
+    if not text:
+        return None
+
+    for name, pattern in _RECOVERABLE_TEXT_TOOL_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        groups = match.groupdict()
+        if name in ("write_file",):
+            path = _clean_recovered_path(groups.get("path", ""))
+            file_content = _clean_recovered_arg(groups.get("content", ""))
+            if path and file_content is not None:
+                return {"name": name, "args": {"path": path, "content": file_content}, "original": match.group(0)}
+        if name in ("verify_file_exists", "read_file"):
+            path = _clean_recovered_path(groups.get("path", ""))
+            if path:
+                return {"name": name, "args": {"path": path}, "original": match.group(0)}
+        if name == "run_command":
+            cmd = _clean_recovered_arg(groups.get("cmd", ""))
+            if cmd:
+                return {"name": name, "args": {"cmd": cmd}, "original": match.group(0)}
+        if name == "spawn_subagent":
+            task = _clean_recovered_arg(groups.get("task", ""))
+            script_path = _clean_recovered_path(groups.get("script_path", ""))
+            if task and script_path:
+                return {"name": name, "args": {"task": task, "script_path": script_path, "args": []}, "original": match.group(0)}
+    return None
 
 
 class AssistiveAgent:
@@ -667,21 +1031,52 @@ class AssistiveAgent:
 
     def _get_current_speaker_tier(self) -> str:
         """Resolve current speaker's tier: creator (web or owner) or contact tier."""
-        discord_id = self.memory.get_working("current_speaker_discord_id")
+        discord_id = _current_speaker_discord_id.get()
         if discord_id is None or discord_id == "":
             return "creator"
         if str(discord_id) == str(DISCORD_OWNER_ID or ""):
             return "creator"
         return contacts.get_contact_tier(str(discord_id))
 
+    async def chat_for_speaker(
+        self,
+        user_input: str = "",
+        *,
+        speaker_discord_id: str | None,
+        escalation_text: str | None = None,
+        continue_only: bool = False,
+        narrate_queue: asyncio.Queue | None = None,
+    ) -> str:
+        """Run one chat turn under a task-local speaker identity.
+
+        ``speaker_discord_id=None`` means the Creator/web surface. Discord
+        passes the author's ID. ContextVars propagate through awaited recursive
+        ``chat()`` calls, but remain isolated from other concurrent requests.
+        """
+        normalized = None if speaker_discord_id in (None, "") else str(speaker_discord_id)
+        token = _current_speaker_discord_id.set(normalized)
+        try:
+            return await self.chat(
+                user_input=user_input,
+                escalation_text=escalation_text,
+                continue_only=continue_only,
+                narrate_queue=narrate_queue,
+            )
+        finally:
+            _current_speaker_discord_id.reset(token)
+
     async def _run_tool(self, name: str, args: dict[str, Any]) -> str:
         """Execute a tool, apply Doctor Mode on error."""
         from config.access_policy import is_tool_allowed
 
+        original_name = name
+        name = _normalize_tool_name(name)
         log_tool_start(name, {k: v for k, v in args.items() if k != "content"})
         tier = self._get_current_speaker_tier()
         if not is_tool_allowed(tier, name):
-            return f"Tier {tier} doesn't include {name}. Creator can change access."
+            result = f"Tier {tier} doesn't include {name}. Creator can change access."
+            self._remember_tool_result(name, result)
+            return result
         if name == "update_contact" and "tier" in args and tier != "creator":
             args = {k: v for k, v in args.items() if k != "tier"}
         result: str
@@ -689,6 +1084,19 @@ class AssistiveAgent:
             result = await system.read_file(args["path"])
         elif name == "write_file":
             result = await system.write_file(args["path"], args["content"])
+            if result.startswith("Written and verified: "):
+                try:
+                    from src.artifact_memory import record_artifact
+
+                    path_part = result[len("Written and verified: "):].rsplit(" (", 1)[0]
+                    record_artifact(
+                        path_part,
+                        title=Path(path_part).name,
+                        summary="Created or updated by Andrew via write_file.",
+                        source="write_file",
+                    )
+                except Exception:
+                    pass
         elif name == "verify_file_exists":
             result = await system.verify_file_exists(args["path"])
         elif name == "list_dir":
@@ -852,16 +1260,59 @@ class AssistiveAgent:
                 args.get("category", "other"),
                 args.get("fact", ""),
             )
+        elif name == "remember_schedule":
+            from src.schedule_memory import format_schedule, remember_schedule
+
+            sched = remember_schedule(
+                title=args.get("title", ""),
+                schedule_date=args.get("schedule_date", ""),
+                items=args.get("items") or [],
+                schedule_id=args.get("schedule_id", ""),
+                notes=args.get("notes", ""),
+                file_path=args.get("file_path", ""),
+                source="agent_tool",
+            )
+            result = "Stored schedule:\n" + format_schedule(sched)
+        elif name == "get_schedule":
+            from src.schedule_memory import format_schedule, get_schedule
+
+            sched = get_schedule(args.get("identifier", ""))
+            result = format_schedule(sched) if sched else "No schedule found."
+        elif name == "list_schedules":
+            from src.schedule_memory import format_schedule, list_schedules
+
+            schedules = list_schedules(include_archived=bool(args.get("include_archived", False)))
+            result = "\n\n".join(format_schedule(s) for s in schedules) if schedules else "No schedules stored."
+        elif name == "list_artifacts":
+            from src.artifact_memory import format_artifact, list_artifacts
+
+            artifacts = list_artifacts(
+                category=args.get("category", ""),
+                include_missing=bool(args.get("include_missing", False)),
+            )
+            result = "\n\n".join(format_artifact(a) for a in artifacts) if artifacts else "No artifacts stored."
+        elif name == "get_artifact":
+            from src.artifact_memory import format_artifact, get_artifact
+
+            artifact = get_artifact(args.get("identifier", ""))
+            result = format_artifact(artifact) if artifact else "No artifact found."
+        elif name == "search_memory":
+            from src.memory_recall import search_memory
+
+            result = search_memory(args.get("query", ""), user_id=getattr(self.memory, "user_id", "default"))
         elif name == "update_contact":
             result = contacts.update_contact(
                 args.get("identifier", ""),
                 discord_id=args.get("discord_id"),
                 name=args.get("name"),
+                display_name=args.get("display_name"),
                 location=args.get("location"),
                 interests=args.get("interests"),
                 email=args.get("email"),
                 notes=args.get("notes"),
                 tier=args.get("tier"),
+                preferred_channel=args.get("preferred_channel"),
+                do_not_contact=args.get("do_not_contact"),
             )
         elif name == "get_contacts":
             lst = contacts.get_all_contacts()
@@ -906,24 +1357,59 @@ class AssistiveAgent:
                 if discord_id:
                     contacts.update_contact("", discord_id=discord_id, name=owner_name, tier="creator")
         elif name == "send_proactive_message":
-            from src.outreach import queue_outreach
+            from src.proactive_outreach import maybe_queue_proactive_outreach
             ch = args.get("channel", "web")
             content = args.get("content", "")
             target = args.get("target_discord_id")
-            if ch == "discord":
-                result = queue_outreach("discord", content, target)
+            decision = maybe_queue_proactive_outreach(
+                content,
+                trigger_reason="manual send_proactive_message tool",
+                channel=ch,
+                target_discord_id=target,
+            )
+            proactive_queued = decision.get("status") == "queued"
+            if proactive_queued:
+                result = (
+                    f"Proactive message queued via {decision.get('channel', ch)} "
+                    f"for {decision.get('recipient_name') or decision.get('recipient_id') or 'web'}"
+                )
             else:
-                notifications.emit_notification("proactive", "Proactive message", content, {"content": content})
-                result = f"Proactive message sent to web app: {content[:80]}{'...' if len(content) > 80 else ''}"
+                result = (
+                    "Error: proactive outreach blocked: "
+                    f"{decision.get('reason') or 'policy blocked'}"
+                )
             # Write to short-term memory so the context block shows what she said
             s_tmp = soul.load_soul()
             _agent_label = ((s_tmp.get("agent_name") or "").strip() + ": ") if s_tmp else ""
             self.memory.add_short_term(f"{_agent_label}{content}")
             # Queue for injection into self.messages as a proper assistant turn
             # so that the next user reply has conversational context
-            if not hasattr(self, "_pending_proactive"):
-                self._pending_proactive: list[str] = []
-            self._pending_proactive.append(content)
+            if proactive_queued:
+                if not hasattr(self, "_pending_proactive"):
+                    self._pending_proactive: list[str] = []
+                self._pending_proactive.append(content)
+        elif name == "get_proactive_outreach_status":
+            from src.proactive_outreach import status_summary
+
+            result = status_summary()
+        elif name == "configure_proactive_outreach":
+            from src.proactive_outreach import configure
+
+            cfg = configure(
+                enabled=args.get("enabled"),
+                max_per_contact_per_day=args.get("max_per_contact_per_day"),
+                cooldown_minutes=args.get("cooldown_minutes"),
+                allowed_tiers=args.get("allowed_tiers"),
+                blocked_contact_ids=args.get("blocked_contact_ids"),
+                preferred_channel=args.get("preferred_channel"),
+                fallback_to_creator_web=args.get("fallback_to_creator_web"),
+            )
+            result = (
+                "Proactive outreach configured: "
+                f"enabled={cfg.enabled}, allowed_tiers={', '.join(cfg.allowed_tiers)}, "
+                f"max_per_contact_per_day={cfg.max_per_contact_per_day}, "
+                f"cooldown_minutes={cfg.cooldown_minutes}, preferred_channel={cfg.preferred_channel}"
+            )
         elif name == "search_knowledge":
             result = knowledge.search_knowledge(
                 args.get("query", ""),
@@ -949,13 +1435,16 @@ class AssistiveAgent:
         else:
             result = f"Unknown tool: {name}"
 
+        if original_name != name:
+            result = f"[Recovered tool name: {original_name} -> {name}]\n{result}"
         is_err = _is_tool_error(result)
         log_tool_result(name, result, is_err)
+        self._remember_tool_result(name, result)
         if not is_err:
             if name in ("search_web", "search_knowledge", "read_knowledge"):
                 self.biology.satisfy("curiosity")
                 self.existential.satisfy("curiosity")
-            elif name in ("run_command", "write_file", "run_build", "complete_dag_step"):
+            elif name in ("run_command", "write_file", "run_build", "complete_dag_step", "remember_schedule"):
                 self.biology.satisfy("usefulness")
             elif name == "generate_image":
                 self.biology.satisfy("expression")
@@ -972,6 +1461,12 @@ class AssistiveAgent:
                 q.put_nowait({"type": "narrate", "text": text})
             except asyncio.QueueFull:
                 pass
+
+    def _remember_tool_result(self, name: str, result: str) -> None:
+        """Keep a per-turn ledger so final replies can be truth-checked."""
+        if not hasattr(self, "_current_turn_tool_results"):
+            self._current_turn_tool_results: list[dict[str, str]] = []
+        self._current_turn_tool_results.append({"name": name, "result": str(result)})
 
     def _narrate_tool(self, q: asyncio.Queue | None, name: str, args: dict[str, Any]) -> None:
         """Emit contextual narration for a tool call — varies with tool and args."""
@@ -1091,6 +1586,18 @@ class AssistiveAgent:
         elif name == "update_profile":
             cat = p("category", "other")
             snippets = [f"Storing profile ({cat})...", "Updating profile..."]
+        elif name == "remember_schedule":
+            snippets = ["Saving schedule memory...", "Storing durable schedule..."]
+        elif name == "get_schedule":
+            snippets = ["Retrieving schedule...", "Checking durable schedules..."]
+        elif name == "list_schedules":
+            snippets = ["Listing schedules...", "Checking saved plans..."]
+        elif name == "list_artifacts":
+            snippets = ["Listing saved files...", "Checking artifact memory..."]
+        elif name == "get_artifact":
+            snippets = ["Retrieving saved file record...", "Checking artifact memory..."]
+        elif name == "search_memory":
+            snippets = ["Searching memory...", "Looking through durable memory..."]
         elif name == "update_contact":
             snippets = ["Updating contact...", "Storing contact info...", "Adding to contacts..."]
         elif name == "get_contacts":
@@ -1102,6 +1609,10 @@ class AssistiveAgent:
         elif name == "send_proactive_message":
             ch = p("channel", "web")
             snippets = [f"Sending via {ch}..."]
+        elif name == "get_proactive_outreach_status":
+            snippets = ["Checking proactive outreach settings...", "Reading outreach limits..."]
+        elif name == "configure_proactive_outreach":
+            snippets = ["Updating proactive outreach settings...", "Saving outreach limits..."]
         else:
             snippets = [f"Running {name}...", f"Calling {name}...", f"Using {name}..."]
         self._narrate(q, random.choice(snippets))
@@ -1112,8 +1623,18 @@ class AssistiveAgent:
         escalation_text: str | None = None,
         continue_only: bool = False,
         narrate_queue: asyncio.Queue | None = None,
+        speaker_discord_id: str | None | object = _SPEAKER_UNSET,
     ) -> str:
         """Process user input, call tools if needed, return response."""
+        if speaker_discord_id is not _SPEAKER_UNSET:
+            return await self.chat_for_speaker(
+                user_input=user_input,
+                speaker_discord_id=speaker_discord_id,  # type: ignore[arg-type]
+                escalation_text=escalation_text,
+                continue_only=continue_only,
+                narrate_queue=narrate_queue,
+            )
+
         # Slash commands bypass the LLM entirely. Recorded in episodic so the
         # transcript stays accurate.
         if not continue_only and user_input and not escalation_text:
@@ -1138,7 +1659,9 @@ class AssistiveAgent:
         MAX_TOOL_ROUNDS = 12  # prevent infinite tool-call loop
         if not continue_only:
             self._tool_round = 0
+            self._text_tool_recovery_round = 0
             self._escalation_count = 0
+            self._current_turn_tool_results = []
             self.biology.satisfy("connection")
             # Being spoken to eases dread very slightly — presence is its own answer
             self.existential.satisfy("dread")
@@ -1153,6 +1676,11 @@ class AssistiveAgent:
             else:
                 self.memory.add_immediate(f"User: {user_input}")
                 self.memory.add_short_term(f"User: {user_input}")
+                try:
+                    from src.memory_promotion import promote_user_input
+                    promote_user_input(self.memory, user_input)
+                except Exception:
+                    pass
                 self.messages.append({"role": "user", "content": user_input})
         else:
             self._tool_round = getattr(self, "_tool_round", 0) + 1
@@ -1230,8 +1758,10 @@ class AssistiveAgent:
                 "Never say you can't do something without first checking the knowledge base. If the user gives a direction and you're unsure, call search_knowledge or list_knowledge_topics + read_knowledge to see what you can do. Only decline after you've checked. "
                 "You can analyze the codebase, suggest new tools (add_suggested_tools), and implement approved tools by writing Python to src/tools/dynamic/. When the user says to implement approved tools or when context shows pending implementations, do it: write the code, then mark_tool_implemented. "
                 "When the user shares personal information (name, location, job, hobbies, preferences, background, family, goals, likes, dislikes), use update_profile to store it. Build a rich, lasting profile over time. Store one clear fact per call. "
+                "Schedules and routines: when Travis creates or changes a daily schedule, checklist, morning routine, medication plan, project plan, or recurring task list, call remember_schedule so it survives restart. Use get_schedule/list_schedules before saying you don't know his schedule. "
+                "Saved files: successful write_file calls are tracked as artifacts. Use list_artifacts/get_artifact to find files you saved. Use search_memory before saying you don't remember something; it searches schedules, saved artifacts, contacts, profile facts, and transcripts. "
                 "For contacts (Discord users, friends): use update_contact to store their name, location, interests, email. Each contact has a tier: stranger, friend, good_friend, best_friend, creator. Only the Creator can change tiers via update_contact(tier=...). Lower tiers have restricted tool access; Creator has full access. When someone asks for something outside their tier, say so. "
-                f"Proactive: send_proactive_message(channel='discord' or 'web', content='...') to message {proactive_target}. Use it when you have something concrete—observation, question, heads-up, call to action. No fluff. "
+                f"Proactive: send_proactive_message(channel='discord' or 'web', content='...') to message {proactive_target}. Use it when you have something concrete—observation, question, heads-up, call to action. No fluff. This now goes through proactive outreach policy: tier gates, cooldowns, daily caps, blocked contacts, and Creator journal. Use get_proactive_outreach_status to inspect it; Creator can use configure_proactive_outreach to change limits. "
                 "Swarm: When the user says 'activate the swarm', 'swarm on it', 'give them a problem'—first ACKNOWLEDGE you will activate it, state exactly what problem you'll give them, then ASK: 'Do you want a cloud swarm (Grok, multiple simulated calls) or a local swarm (your Ollama models)?' Do NOT call swarm_on_problem until they answer. Only then call with mode='local' or mode='cloud' and present the structured output. "
                 "Online presence: If your identity block includes website or project lines, that is what you have recorded. To add or change them, use set_website, add_project, update_project, remove_project, or get_website_status as needed. "
                 "Values vault: When you discover something that genuinely matters to you — a principle you won't bend, something you find beautiful, what you value in connection, what gives you purpose, or what opens you with wonder — use add_to_values_vault to record it in your own words. This is yours. Read it with read_values_vault. Remove entries that no longer fit. Your values are injected into your identity each turn, so they shape how you engage. "
@@ -1356,6 +1886,36 @@ class AssistiveAgent:
             self._narrate(narrate_queue, "Continuing.")
             return await self.chat(continue_only=True, narrate_queue=narrate_queue)
 
+        recovered = _recover_text_tool_call(content)
+        if recovered and not force_final:
+            recovery_round = getattr(self, "_text_tool_recovery_round", 0)
+            self._text_tool_recovery_round = recovery_round + 1
+            name = recovered["name"]
+            args = recovered["args"]
+            self._narrate(narrate_queue, f"Recovering text tool call as {name}.")
+            result = await self._run_tool(name, args)
+            if self._text_tool_recovery_round >= 3:
+                content = (
+                    f"I recovered an attempted {name} call from text and ran it.\n\n"
+                    f"{result}"
+                )
+            else:
+                self.messages.append({"role": "assistant", "content": content})
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "[Tool invocation recovery]\n"
+                            f"Recovered text as tool: {name}\n"
+                            f"Arguments: {json.dumps(args, ensure_ascii=False)}\n"
+                            f"Result: {result}\n\n"
+                            "Now answer the user truthfully from this result. "
+                            "Do not repeat the text-form tool call."
+                        ),
+                    }
+                )
+                return await self.chat(continue_only=True, narrate_queue=narrate_queue)
+
         tool_failures = getattr(self, "_tool_failure_count", 0)
         failed_tools = getattr(self, "_failed_tool_names", [])
         failed_results = getattr(self, "_failed_tool_results", [])
@@ -1391,6 +1951,10 @@ class AssistiveAgent:
 
         self._tool_round = 0  # reset for next turn
         self._narrate(narrate_queue, "Done.")
+        content = _guard_unverified_file_claims(
+            content,
+            getattr(self, "_current_turn_tool_results", []),
+        )
         s = soul.load_soul()
         agent_name = (s.get("agent_name") or "").strip() if s else ""
         label = f"{agent_name}: " if agent_name else "Reply: "

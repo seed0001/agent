@@ -37,6 +37,32 @@ Three persistent drives distinct from functional biology:
 - On the user's next reply, Grok sees her proactive message as the prior assistant turn — she knows what she said.
 - Previously: Discord channel wrote nothing to memory. Web channel wrote a clunky label. Neither wrote to the conversation thread.
 
+### Proactive Outreach Policy
+- Proactive messages now pass through `src/proactive_outreach.py` before delivery.
+- The policy supports enable/disable, allowed contact tiers, blocked contacts, do-not-contact notes, per-contact daily caps, cooldowns, and channel preference.
+- Every queued or blocked attempt is journaled to `andrew's projects/journal/outreach_log.txt` with timestamp, recipient, tier, trigger reason, message, and outcome.
+- Creator oversight tools: `get_proactive_outreach_status` and `configure_proactive_outreach`.
+
+### Schedule Memory
+- Added durable schedule/task memory in `src/schedule_memory.py`, stored at `data/profiles/default/schedules.json`.
+- Tools: `remember_schedule`, `get_schedule`, and `list_schedules`.
+- Active schedules are injected into Andrew's context so routines survive restart instead of staying buried in episodic chat.
+- Reconstructed Travis's May 8, 2026 morning schedule and saved it to both structured schedule memory and `andrew's projects/schedules/Travis_Morning_Schedule_May_8_2026.txt`.
+
+### Artifact Memory + Recall
+- Added durable artifact memory in `src/artifact_memory.py`, stored at `data/profiles/default/artifacts.json`.
+- Successful verified `write_file` calls now automatically create/update artifact records.
+- Tools: `list_artifacts`, `get_artifact`, and `search_memory`.
+- `search_memory` searches schedules, artifacts, contacts, profile facts, and episodic transcript before Andrew says he cannot remember something.
+- Added lightweight automatic promotion rules for important user facts (medication, routines, finance tracking, prediction engine, Chance care, medical check-ins).
+
+### Tool Invocation Recovery + File Claim Guard
+- Added a recovery layer in `src/agent/core.py` for safe near-miss tool names: `Write_file`, `write file`, and `write_file.` normalize to `write_file`.
+- Added parsing for explicit text-form tool attempts such as `Save to C:\path\file.txt: content`, `Check if file exists at C:\path`, `Open file at C:\path`, `Execute command: ...`, and subagent launch variants.
+- Recovery executes the real tool. It does not treat narration like "I saved the file" as success.
+- Added a final-response guard: if Andrew claims he saved/created/wrote a file without same-turn `write_file` or `verify_file_exists` evidence, the reply is corrected before Travis sees it.
+- Tests: `tests/test_tool_invocation_recovery.py` and `tests/test_file_claim_guard.py`.
+
 ### Subagent Reliability
 - Subagents now spawn with `sys.executable` (the exact Python interpreter running the process) instead of bare `python`.
 - All subagents run with `PYTHONIOENCODING=utf-8` so Windows charmap errors cannot crash output capture.

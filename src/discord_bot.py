@@ -71,6 +71,18 @@ async def _run_discord_bot():
         if not content:
             return
 
+        # Deterministically persist every Discord speaker. Do this before slash
+        # commands too, so contacts do not depend on the LLM choosing to call
+        # update_contact.
+        try:
+            contacts.record_discord_interaction(
+                discord_id=author_id,
+                display_name=author_name,
+                content=content,
+            )
+        except Exception:
+            pass
+
         # Slash-command interception — bypasses the LLM entirely. Same parser
         # as web/CLI, so behavior matches across surfaces.
         try:
@@ -127,7 +139,11 @@ async def _run_discord_bot():
 
         async def run_agent():
             try:
-                return await _agent_ref.chat(user_msg, narrate_queue=narrate_queue)
+                return await _agent_ref.chat(
+                    user_msg,
+                    narrate_queue=narrate_queue,
+                    speaker_discord_id=author_id,
+                )
             except Exception as e:
                 return f"Sorry, I hit an error: {e}"
 
