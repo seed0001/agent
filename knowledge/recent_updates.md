@@ -63,6 +63,16 @@ Three persistent drives distinct from functional biology:
 - Added a final-response guard: if Andrew claims he saved/created/wrote a file without same-turn `write_file` or `verify_file_exists` evidence, the reply is corrected before Travis sees it.
 - Tests: `tests/test_tool_invocation_recovery.py` and `tests/test_file_claim_guard.py`.
 
+### Direct Discord Messaging (bypasses proactive caps)
+- Added `send_discord_message(content, target_user_id?, target_channel_id?)` tool.
+- This is for Creator-directed sends: when Travis tells Andrew to send a message.
+- Bypasses proactive outreach daily caps, cooldowns, and tier restrictions.
+- Supports both DMs (target_user_id) and channel posts (target_channel_id).
+- The existing `send_proactive_message` remains for Andrew's autonomous outreach and is still subject to caps.
+- Rule: If the Creator says "send X to Y", use `send_discord_message`. If Andrew decides on his own to reach out, use `send_proactive_message`.
+- Updated `src/outreach.py` to support channel targeting and direct/proactive distinction.
+- Updated `src/discord_bot.py` consumer to handle channel messages.
+
 ### Subagent Reliability
 - Subagents now spawn with `sys.executable` (the exact Python interpreter running the process) instead of bare `python`.
 - All subagents run with `PYTHONIOENCODING=utf-8` so Windows charmap errors cannot crash output capture.

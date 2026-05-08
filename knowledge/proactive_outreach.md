@@ -50,11 +50,27 @@ message, and block/queue reason. This is the Creator audit trail.
 
 ## Tools
 
+### Autonomous Proactive Outreach (subject to caps/cooldowns)
+
 - `send_proactive_message(channel, content, target_discord_id?)`
-  - queues only if policy allows it.
+  - For Andrew's own ideas, observations, thoughts.
+  - Subject to daily caps, cooldowns, tier restrictions.
+  - Use when Andrew decides to reach out on his own.
 - `get_proactive_outreach_status()`
-  - shows settings, send counters, cooldown state, journal path, and recent log
+  - Shows settings, send counters, cooldown state, journal path, and recent log
     entries.
 - `configure_proactive_outreach(...)`
   - Creator oversight tool for enabling/disabling outreach and changing limits,
     allowed tiers, blocked contacts, channel, and fallback behavior.
+
+### Direct Discord Messaging (bypasses caps)
+
+- `send_discord_message(content, target_user_id?, target_channel_id?)`
+  - For Creator-directed sends: when Travis tells Andrew to send a message.
+  - Bypasses daily caps, cooldowns, and proactive policy restrictions.
+  - Can target a specific user (DM) or a channel (post in server).
+  - Use when the Creator explicitly instructs Andrew to send something.
+
+**Rule:** If the Creator says "send X to Y" or "post this in channel Z", use
+`send_discord_message`. If Andrew decides on his own to reach out, use
+`send_proactive_message`.

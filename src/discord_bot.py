@@ -277,24 +277,30 @@ async def _outreach_consumer():
             except asyncio.QueueFull:
                 pass
             continue
-        user_id = msg.target_user_id or DISCORD_OWNER_ID
         content = (msg.content or "").strip()
         if not content:
             continue
         from src.logging_config import log_outreach_attempt, log_outreach_failure, log_outreach_success
         from src import notifications
-        log_outreach_attempt("discord", user_id, content[:80])
+        
+        # Determine target: channel or user DM
+        target_channel_id = getattr(msg, "target_channel_id", None)
+        user_id = msg.target_user_id or DISCORD_OWNER_ID
+        is_direct = getattr(msg, "is_direct", False)
+        target_desc = f"channel:{target_channel_id}" if target_channel_id else f"user:{user_id}"
+        log_outreach_attempt("discord", target_desc, content[:80])
+        
         try:
-            user = await client.fetch_user(int(user_id))
             voice_bytes = None
             try:
                 from src.voice.tts import synthesize
                 from src.user_settings import get_tts_voice
-
                 voice_bytes = await synthesize(content, voice=get_tts_voice())
             except Exception:
                 pass
-            first = True
+            
+            # Chunk the message
+            chunks = []
             remainder = content
             while remainder:
                 chunk = remainder[:DISCORD_MAX_LEN]
@@ -308,38 +314,57 @@ async def _outreach_consumer():
                     remainder = remainder[cut:].strip()
                 else:
                     remainder = ""
-                files = []
-                if first and voice_bytes and len(voice_bytes) < 25 * 1024 * 1024:
-                    files.append(discord.File(io.BytesIO(voice_bytes), filename="reply.mp3"))
-                first = False
-                if files:
-                    await user.send(chunk, files=files)
-                else:
-                    await user.send(chunk)
-            log_outreach_success("discord", user_id)
+                chunks.append(chunk)
+            
+            # Send to channel or user
+            if target_channel_id:
+                channel = client.get_channel(int(target_channel_id))
+                if not channel:
+                    channel = await client.fetch_channel(int(target_channel_id))
+                for i, chunk in enumerate(chunks):
+                    files = []
+                    if i == 0 and voice_bytes and len(voice_bytes) < 25 * 1024 * 1024:
+                        files.append(discord.File(io.BytesIO(voice_bytes), filename="reply.mp3"))
+                    if files:
+                        await channel.send(chunk, files=files)
+                    else:
+                        await channel.send(chunk)
+            else:
+                user = await client.fetch_user(int(user_id))
+                for i, chunk in enumerate(chunks):
+                    files = []
+                    if i == 0 and voice_bytes and len(voice_bytes) < 25 * 1024 * 1024:
+                        files.append(discord.File(io.BytesIO(voice_bytes), filename="reply.mp3"))
+                    if files:
+                        await user.send(chunk, files=files)
+                    else:
+                        await user.send(chunk)
+            
+            log_outreach_success("discord", target_desc)
             # Store in memory so when Creator replies, agent knows what they're responding to
             try:
-                _agent_ref.memory.add_short_term(f"[Proactive message I sent you via Discord]: {content}")
+                msg_type = "Direct message" if is_direct else "Proactive message"
+                _agent_ref.memory.add_short_term(f"[{msg_type} I sent via Discord to {target_desc}]: {content}")
             except Exception:
                 pass
         except Exception as e:
-            log_outreach_failure("discord", user_id, str(e))
+            log_outreach_failure("discord", target_desc, str(e))
             notifications.emit_notification(
                 "delivery_failed",
-                "Discord DM failed",
-                f"Could not deliver to {user_id}: {str(e)[:100]}. Falling back to web.",
-                {"channel": "discord", "target": user_id, "error": str(e), "content_preview": content[:100]},
+                "Discord message failed",
+                f"Could not deliver to {target_desc}: {str(e)[:100]}. Falling back to web.",
+                {"channel": "discord", "target": target_desc, "error": str(e), "content_preview": content[:100]},
             )
             try:
                 notifications.show_desktop_notification(
-                    "Discord DM failed — check web app",
+                    "Discord message failed — check web app",
                     f"Error: {str(e)[:80]}. Message delivered via web instead.",
                 )
             except Exception:
                 pass
             try:
-                notifications.emit_notification("proactive", "Proactive (Discord failed)", content[:200], {"content": content})
-                _agent_ref.memory.add_short_term(f"[Proactive I sent you via web (Discord failed)]: {content}")
+                notifications.emit_notification("proactive", "Discord message (failed)", content[:200], {"content": content})
+                _agent_ref.memory.add_short_term(f"[Message I tried to send via Discord (failed)]: {content}")
             except Exception:
                 pass
 

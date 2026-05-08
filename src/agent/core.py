@@ -727,7 +727,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "send_proactive_message",
-            "description": "Send a proactive message through the proactive outreach policy. Use when you have something concrete: an observation, a question, a heads-up, or a call to action. No fluff. Enforces tier, cooldown, daily cap, blocked contacts, and logs to the Creator journal.",
+            "description": "Send an AUTONOMOUS proactive message through the proactive outreach policy. Use for your own ideas, thoughts, observations. Subject to tier, cooldown, daily cap restrictions. For Creator-directed messages (when Travis tells you to send something), use send_discord_message instead.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -740,6 +740,22 @@ TOOL_DEFINITIONS = [
                     "target_discord_id": {"type": "string", "description": "Discord user ID for DM (optional; defaults to owner)"},
                 },
                 "required": ["channel", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_discord_message",
+            "description": "Send a Discord message directly, bypassing proactive outreach caps/cooldowns. Use when the Creator tells you to send a message to a specific user or channel. Not subject to daily limits.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "The message content to send"},
+                    "target_user_id": {"type": "string", "description": "Discord user ID for DM (optional)"},
+                    "target_channel_id": {"type": "string", "description": "Discord channel ID to post in (optional)"},
+                },
+                "required": ["content"],
             },
         },
     },
@@ -806,20 +822,43 @@ def _extract_windows_paths(text: str) -> list[str]:
     for match in _WINDOWS_PATH_RE.finditer(text or ""):
         raw = match.group(0).strip()
         raw = raw.rstrip(".,;:!?) ]}")
+        # Tool results often append " (N bytes)" after the path. If the model
+        # quotes that whole phrase, keep only the actual filesystem path.
+        raw = re.sub(r"\s+\(\d+\s+bytes?\b.*$", "", raw, flags=re.IGNORECASE)
         if raw and raw not in paths:
             paths.append(raw)
     return paths
+
+
+def _canonical_file_claim_path(path: str) -> str:
+    """Normalize display paths before comparing or checking existence.
+
+    LLM replies sometimes escape apostrophes in Windows paths (`andrew\'s`).
+    That is Markdown/Python-style display escaping, not a real filesystem path.
+    """
+    cleaned = (path or "").strip().replace("\\'", "'")
+    try:
+        return str(Path(cleaned).expanduser().resolve(strict=False)).casefold()
+    except OSError:
+        return cleaned.casefold()
+
+
+def _display_path_exists(path: str) -> bool:
+    cleaned = (path or "").strip().replace("\\'", "'")
+    return Path(cleaned).expanduser().exists()
 
 
 def _verified_file_tool_results(tool_results: list[dict[str, str]]) -> list[str]:
     verified: list[str] = []
     for item in tool_results:
         result = item.get("result", "")
-        if result.startswith("Written and verified: "):
-            path = result[len("Written and verified: "):].rsplit(" (", 1)[0]
+        write_marker = "Written and verified: "
+        exists_marker = "EXISTS: "
+        if write_marker in result:
+            path = result.split(write_marker, 1)[1].splitlines()[0].rsplit(" (", 1)[0]
             verified.append(path)
-        elif result.startswith("EXISTS: "):
-            path = result[len("EXISTS: "):].rsplit(" (", 1)[0]
+        elif exists_marker in result:
+            path = result.split(exists_marker, 1)[1].splitlines()[0].rsplit(" (", 1)[0]
             verified.append(path)
     return verified
 
@@ -836,7 +875,12 @@ def _guard_unverified_file_claims(content: str, tool_results: list[dict[str, str
 
     verified_this_turn = _verified_file_tool_results(tool_results)
     claimed_paths = _extract_windows_paths(content)
-    missing_paths = [p for p in claimed_paths if not Path(p).expanduser().exists()]
+    verified_paths = {_canonical_file_claim_path(p) for p in verified_this_turn}
+    missing_paths = [
+        p
+        for p in claimed_paths
+        if _canonical_file_claim_path(p) not in verified_paths and not _display_path_exists(p)
+    ]
 
     if missing_paths:
         correction = (
@@ -1410,6 +1454,42 @@ class AssistiveAgent:
                 f"max_per_contact_per_day={cfg.max_per_contact_per_day}, "
                 f"cooldown_minutes={cfg.cooldown_minutes}, preferred_channel={cfg.preferred_channel}"
             )
+        elif name == "send_discord_message":
+            from src.outreach import queue_outreach
+            content = args.get("content", "").strip()
+            target_user_id = args.get("target_user_id")
+            target_channel_id = args.get("target_channel_id")
+            if not content:
+                result = "Error: content is required"
+            elif not target_user_id and not target_channel_id:
+                from config.settings import DISCORD_OWNER_ID
+                target_user_id = DISCORD_OWNER_ID
+                if not target_user_id:
+                    result = "Error: no target specified and DISCORD_OWNER_ID not set"
+                else:
+                    queue_result = queue_outreach(
+                        "discord",
+                        content,
+                        target_user_id=target_user_id,
+                        is_direct=True,
+                    )
+                    result = f"Direct message queued for Discord DM to {target_user_id}: {content[:80]}{'...' if len(content) > 80 else ''}"
+                    s_tmp = soul.load_soul()
+                    _agent_label = ((s_tmp.get("agent_name") or "").strip() + ": ") if s_tmp else ""
+                    self.memory.add_short_term(f"{_agent_label}{content}")
+            else:
+                queue_result = queue_outreach(
+                    "discord",
+                    content,
+                    target_user_id=target_user_id,
+                    target_channel_id=target_channel_id,
+                    is_direct=True,
+                )
+                target_desc = f"channel {target_channel_id}" if target_channel_id else f"user {target_user_id}"
+                result = f"Direct message queued for Discord ({target_desc}): {content[:80]}{'...' if len(content) > 80 else ''}"
+                s_tmp = soul.load_soul()
+                _agent_label = ((s_tmp.get("agent_name") or "").strip() + ": ") if s_tmp else ""
+                self.memory.add_short_term(f"{_agent_label}{content}")
         elif name == "search_knowledge":
             result = knowledge.search_knowledge(
                 args.get("query", ""),
