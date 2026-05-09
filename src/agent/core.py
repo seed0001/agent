@@ -1970,6 +1970,18 @@ class AssistiveAgent:
                 except Exception:
                     pass
                 self.messages.append({"role": "user", "content": user_input})
+                # Proactive episodic recall: run before prompt context assembly
+                # for creator and best_friend+ turns so restarts still feel
+                # continuous.
+                try:
+                    current_tier = self._get_current_speaker_tier()
+                    if current_tier in ("creator", "best_friend"):
+                        recall = self.memory.auto_retrieve_episodic(user_input, days_back=7, limit=5)
+                        summary = (recall or {}).get("summary", "").strip()
+                        if summary:
+                            self.memory.add_immediate(f"[Auto episodic recall]\n{summary}")
+                except Exception:
+                    pass
         else:
             self._tool_round = getattr(self, "_tool_round", 0) + 1
         self._narrate(

@@ -19,8 +19,10 @@ What changed under the hood:
 """
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,14 @@ from src.agent.memory_stores import (
 )
 
 PROFILE_CATEGORIES = ("background", "work", "preferences", "personal", "other")
+_STOP_TERMS = {
+    "this", "that", "with", "from", "have", "your", "they", "them", "their",
+    "what", "when", "where", "would", "could", "should", "about", "like",
+    "just", "want", "really", "thing", "stuff", "some", "more", "very",
+    "into", "over", "then", "than", "also", "back", "still", "been", "were",
+    "good", "look", "kind", "sort", "here", "there", "doing", "make", "made",
+    "take", "tell", "told", "said", "says", "user", "andrew", "reply", "message",
+}
 
 
 @dataclass
@@ -138,6 +148,12 @@ class MemoryStore:
             source="agent", title=f"agent boot {datetime.now().isoformat(timespec='seconds')}"
         )
         self.session_id = self._session.id
+        self.episodic_cache_path = self.user_dir / "episodic_cache.jsonl"
+        # Warm-load recent episodic context so restarts don't feel amnesic.
+        try:
+            self.load_recent_episodic_context(hours_back=72, limit=5)
+        except Exception:
+            pass
 
     def _semantic_index(self):
         """Lazy-load the semantic index. Returns None if embeddings aren't
@@ -157,6 +173,150 @@ class MemoryStore:
         if idx is None:
             return []
         return idx.find_similar_text(query, limit=limit, source_table="episodic_memory")
+
+    def auto_retrieve_episodic(
+        self,
+        user_message: str,
+        days_back: int = 7,
+        *,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        """Auto-retrieve relevant episodic context for the current message."""
+        text = (user_message or "").strip()
+        if not text:
+            return {"summary": "", "hits": [], "query_terms": []}
+
+        query_terms = self._extract_query_terms(text)
+        recent = self.episodic.get_recent_across_sessions(
+            limit=250,
+            within_days=max(1, int(days_back)),
+            exclude_session=None,
+        )
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        ranked: list[tuple[float, str, str]] = []  # score, content, source
+        for row in recent:
+            blob = (row.content or "").lower()
+            lexical = sum(1 for t in query_terms if t in blob)
+            if lexical == 0:
+                continue
+            age_days = max(0.0, (now - row.created_at).total_seconds() / 86400.0)
+            recency_bonus = 1.0 / (1.0 + age_days)
+            score = float(lexical) + float(row.importance) * 1.5 + recency_bonus
+            ranked.append((score, row.content, "lexical"))
+
+        semantic_hits = self.find_similar(text, limit=max(2, limit * 2))
+        for h in semantic_hits:
+            ranked.append((float(h.score) + 0.5, h.content, "semantic"))
+
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        seen: set[str] = set()
+        hits: list[dict[str, Any]] = []
+        for score, content, source in ranked:
+            c = (content or "").strip()
+            if not c:
+                continue
+            key = c.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append(
+                {
+                    "score": round(score, 3),
+                    "source": source,
+                    "content": c,
+                }
+            )
+            if len(hits) >= max(1, int(limit)):
+                break
+
+        if not hits:
+            return {"summary": "", "hits": [], "query_terms": query_terms}
+
+        lines = []
+        for i, h in enumerate(hits[: max(1, int(limit))], start=1):
+            snippet = h["content"].replace("\n", " ")
+            if len(snippet) > 180:
+                snippet = snippet[:177] + "..."
+            lines.append(f"{i}. ({h['source']}, {h['score']:.2f}) {snippet}")
+        summary = "Auto-retrieved episodic context:\n" + "\n".join(lines)
+
+        self.state.set(
+            "auto_retrieved_episodic",
+            {
+                "ts": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                "query_terms": query_terms,
+                "summary": summary,
+                "hits": hits,
+            },
+        )
+        self._append_episodic_cache(
+            key_topics_entities=query_terms,
+            condensed_summary=summary,
+            importance_score=min(1.0, max(h["score"] for h in hits) / 5.0),
+        )
+        return {"summary": summary, "hits": hits, "query_terms": query_terms}
+
+    def load_recent_episodic_context(self, *, hours_back: int = 72, limit: int = 5) -> str:
+        """Warm-load high-importance recent episodic context into working state."""
+        hours = max(1, int(hours_back))
+        within_days = max(1, int((hours + 23) // 24))
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
+        recent = self.episodic.get_recent_across_sessions(
+            limit=250,
+            within_days=within_days,
+            exclude_session=None,
+        )
+        candidates = [r for r in recent if r.created_at >= cutoff and float(r.importance) >= 0.55]
+        if not candidates:
+            fallback = [r for r in recent if r.created_at >= cutoff]
+            candidates = fallback[-max(1, int(limit)) :]
+        else:
+            candidates.sort(key=lambda r: (r.importance, r.created_at), reverse=True)
+            candidates = candidates[: max(1, int(limit))]
+            candidates.sort(key=lambda r: r.created_at)
+
+        if not candidates:
+            self.state.delete("episodic_warm_start")
+            return ""
+
+        lines = []
+        for r in candidates:
+            ts = r.created_at.isoformat(timespec="seconds")
+            snippet = (r.content or "").replace("\n", " ")
+            if len(snippet) > 200:
+                snippet = snippet[:197] + "..."
+            lines.append(f"- [{ts}] (importance {r.importance:.2f}) {snippet}")
+        block = "Warm-loaded episodic context (recent continuity):\n" + "\n".join(lines)
+        self.state.set("episodic_warm_start", block)
+        return block
+
+    def _extract_query_terms(self, text: str) -> list[str]:
+        terms: list[str] = []
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9_'-]{2,}", text):
+            norm = token.lower().strip()
+            if norm in _STOP_TERMS:
+                continue
+            if norm not in terms:
+                terms.append(norm)
+        # Keep the first N to avoid over-broad matching.
+        return terms[:12]
+
+    def _append_episodic_cache(
+        self,
+        *,
+        key_topics_entities: list[str],
+        condensed_summary: str,
+        importance_score: float,
+    ) -> None:
+        entry = {
+            "conversation_date": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+            "key_topics_entities": key_topics_entities,
+            "condensed_summary": condensed_summary,
+            "importance_score": round(max(0.0, min(1.0, float(importance_score))), 3),
+        }
+        self.episodic_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.episodic_cache_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     # -- compatibility properties --------------------------------------
 

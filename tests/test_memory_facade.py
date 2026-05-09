@@ -157,6 +157,40 @@ def test_get_context_for_agent_includes_cross_session_history(mem: MemoryStore) 
     assert "dog" in block
 
 
+def test_auto_retrieve_episodic_surfaces_named_entity_context(mem: MemoryStore) -> None:
+    prior = mem.sessions.create(source="agent", title="friend outline")
+    mem.episodic.insert(
+        prior.id,
+        "user",
+        "Brandon prefers dream analysis and AI streamer co-host planning.",
+        importance=0.8,
+    )
+
+    result = mem.auto_retrieve_episodic("Can you remind me what Brandon likes?", days_back=7, limit=3)
+
+    assert result["hits"]
+    assert any("Brandon" in h["content"] for h in result["hits"])
+    summary = result["summary"]
+    assert "Auto-retrieved episodic context" in summary
+    assert "Brandon" in summary
+
+
+def test_warm_load_recent_episodic_context_sets_working_state(mem: MemoryStore) -> None:
+    prior = mem.sessions.create(source="agent", title="recent planning")
+    mem.episodic.insert(
+        prior.id,
+        "user",
+        "Brandon wants continuity in friend/project memory.",
+        importance=0.9,
+    )
+
+    block = mem.load_recent_episodic_context(hours_back=72, limit=3)
+
+    assert "Warm-loaded episodic context" in block
+    assert "Brandon" in block
+    assert "Warm-loaded episodic context" in str(mem.get_working("episodic_warm_start", ""))
+
+
 # ---------- Working state KV ------------------------------------------------
 
 
