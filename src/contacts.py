@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from config.settings import USER_PROFILES_DIR
+from config.settings import DISCORD_OWNER_ID, USER_PROFILES_DIR
 
 CONTACTS_PATH = USER_PROFILES_DIR / "default" / "contacts.json"
 
@@ -180,6 +180,9 @@ def record_discord_interaction(
         "first_seen": now,
     }
     contact["discord_id"] = str(discord_id)
+    if str(discord_id) == str(DISCORD_OWNER_ID or ""):
+        contact["tier"] = "creator"
+        contact["preferred_channel"] = "discord"
     contact["display_name"] = (display_name or "").strip() or contact.get("display_name", "")
     if not contact.get("name") and contact.get("display_name"):
         contact["name"] = contact["display_name"]
@@ -221,11 +224,19 @@ def record_outbound(discord_id: str | None = None, identifier: str = "") -> None
 
 def get_contact_tier(discord_id: str | None, identifier: str = "") -> str:
     """Get tier for a contact. Default stranger."""
+    if discord_id and str(discord_id) == str(DISCORD_OWNER_ID or ""):
+        return "creator"
     contact = get_contact(identifier, discord_id=discord_id)
     if not contact:
         return "stranger"
     t = contact.get("tier", "stranger")
     return t if t in CONTACT_TIERS else "stranger"
+
+
+def can_send_direct(discord_id: str | None) -> bool:
+    """True if this contact can receive direct Discord sends (best_friend+)."""
+    tier = get_contact_tier(discord_id)
+    return _TIER_RANK.get(tier, 0) >= _TIER_RANK["best_friend"]
 
 
 def get_all_contacts() -> list[dict]:

@@ -40,7 +40,7 @@ def test_blocks_lower_tier_contacts_and_logs(monkeypatch, tmp_path):
     monkeypatch.setattr(
         proactive_outreach,
         "queue_outreach",
-        lambda channel, content, target_user_id=None: queued.append((channel, content, target_user_id)) or "queued",
+        lambda channel, content, target_user_id=None, **kwargs: queued.append((channel, content, target_user_id, kwargs)) or "queued",
     )
 
     decision = proactive_outreach.maybe_queue_proactive_outreach(
@@ -83,7 +83,7 @@ def test_selects_matching_allowed_contact_and_enforces_daily_cap(monkeypatch, tm
     monkeypatch.setattr(
         proactive_outreach,
         "queue_outreach",
-        lambda channel, content, target_user_id=None: queued.append((channel, content, target_user_id)) or "queued",
+        lambda channel, content, target_user_id=None, **kwargs: queued.append((channel, content, target_user_id, kwargs)) or "queued",
     )
     proactive_outreach.save_config(
         proactive_outreach.OutreachConfig(
@@ -107,7 +107,7 @@ def test_selects_matching_allowed_contact_and_enforces_daily_cap(monkeypatch, tm
 
     assert first["status"] == "queued"
     assert first["recipient_id"] == "good-1"
-    assert queued == [("discord", "I found a Python automation idea.", "good-1")]
+    assert queued == [("discord", "I found a Python automation idea.", "good-1", {"is_direct": False, "source": "proactive", "trigger_key": "test", "suppress_duplicates": True, "dedup_window_seconds": 60})]
     assert second["status"] == "blocked"
     assert second["reason"] == "daily cap reached (1)"
 
@@ -125,3 +125,54 @@ def test_creator_can_disable_feature(monkeypatch, tmp_path):
     assert decision["status"] == "blocked"
     assert decision["reason"] == "feature disabled"
     assert "enabled=False" in proactive_outreach.status_summary()
+
+
+def test_duplicate_proactive_send_is_suppressed(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    contacts = [
+        {
+            "id": "creator-1",
+            "discord_id": "creator-1",
+            "name": "Creator",
+            "tier": "creator",
+            "interests": "automation",
+        }
+    ]
+    monkeypatch.setattr(proactive_outreach.contacts, "get_all_contacts", lambda: contacts)
+    monkeypatch.setattr(
+        proactive_outreach.contacts,
+        "get_contact",
+        lambda identifier, discord_id=None: next((c for c in contacts if c["discord_id"] == discord_id), None),
+    )
+    proactive_outreach.save_config(
+        proactive_outreach.OutreachConfig(
+            cooldown_minutes=0,
+            max_per_contact_per_day=10,
+            allowed_tiers=["creator"],
+            suppress_duplicates=True,
+            duplicate_window_seconds=60,
+        )
+    )
+    sent_once = {"done": False}
+
+    def _queue(channel, content, target_user_id=None, **kwargs):
+        if sent_once["done"]:
+            return "Duplicate suppressed for discord (creator-1); dedup_key=testkey"
+        sent_once["done"] = True
+        return "queued"
+
+    monkeypatch.setattr(proactive_outreach, "queue_outreach", _queue)
+
+    first = proactive_outreach.maybe_queue_proactive_outreach(
+        "good morning",
+        trigger_reason="morning",
+        target_discord_id="creator-1",
+    )
+    second = proactive_outreach.maybe_queue_proactive_outreach(
+        "good morning",
+        trigger_reason="morning",
+        target_discord_id="creator-1",
+    )
+
+    assert first["status"] == "queued"
+    assert second["status"] == "suppressed"

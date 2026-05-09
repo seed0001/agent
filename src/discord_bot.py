@@ -6,6 +6,8 @@ Consumes outreach queue for proactive messages.
 """
 import asyncio
 import io
+import json
+from pathlib import Path
 
 from config.settings import DISCORD_OWNER_ID, DISCORD_BOT_TOKEN
 
@@ -241,8 +243,6 @@ async def _run_discord_bot():
 
 async def _outreach_consumer():
     """Background task: send proactive Discord messages from outreach queue."""
-    if not DISCORD_OWNER_ID:
-        return
     try:
         import discord
     except ImportError:
@@ -270,7 +270,7 @@ async def _outreach_consumer():
             except asyncio.QueueFull:
                 pass
             continue
-        if not client.is_ready:
+        if not client.is_ready():
             await asyncio.sleep(2)
             try:
                 q.put_nowait(msg)
@@ -278,7 +278,8 @@ async def _outreach_consumer():
                 pass
             continue
         content = (msg.content or "").strip()
-        if not content:
+        attachment_paths = list(getattr(msg, "attachment_paths", []) or [])
+        if not content and not attachment_paths:
             continue
         from src.logging_config import log_outreach_attempt, log_outreach_failure, log_outreach_success
         from src import notifications
@@ -315,6 +316,17 @@ async def _outreach_consumer():
                 else:
                     remainder = ""
                 chunks.append(chunk)
+            if not chunks:
+                chunks = ["(attachment)"]
+
+            files_payload = []
+            for p in attachment_paths:
+                try:
+                    path = str(p)
+                    data = Path(path).read_bytes()
+                    files_payload.append(discord.File(io.BytesIO(data), filename=Path(path).name))
+                except Exception:
+                    continue
             
             # Send to channel or user
             if target_channel_id:
@@ -325,16 +337,22 @@ async def _outreach_consumer():
                     files = []
                     if i == 0 and voice_bytes and len(voice_bytes) < 25 * 1024 * 1024:
                         files.append(discord.File(io.BytesIO(voice_bytes), filename="reply.mp3"))
+                    if i == 0 and files_payload:
+                        files.extend(files_payload)
                     if files:
                         await channel.send(chunk, files=files)
                     else:
                         await channel.send(chunk)
             else:
+                if not user_id:
+                    raise ValueError("No target user id and DISCORD_OWNER_ID is not set.")
                 user = await client.fetch_user(int(user_id))
                 for i, chunk in enumerate(chunks):
                     files = []
                     if i == 0 and voice_bytes and len(voice_bytes) < 25 * 1024 * 1024:
                         files.append(discord.File(io.BytesIO(voice_bytes), filename="reply.mp3"))
+                    if i == 0 and files_payload:
+                        files.extend(files_payload)
                     if files:
                         await user.send(chunk, files=files)
                     else:
@@ -367,6 +385,45 @@ async def _outreach_consumer():
                 _agent_ref.memory.add_short_term(f"[Message I tried to send via Discord (failed)]: {content}")
             except Exception:
                 pass
+
+
+async def list_connected_channels(guild_id: str | None = None) -> str:
+    """Return guild/channel visibility for the connected Discord bot."""
+    client = _discord_client
+    if not client:
+        return "Error: Discord client not started."
+    if not client.is_ready():
+        return "Error: Discord client is not ready yet."
+
+    rows: list[dict] = []
+    guild_filter = str(guild_id or "").strip()
+    for guild in client.guilds:
+        if guild_filter and str(guild.id) != guild_filter:
+            continue
+        channels: list[dict] = []
+        for ch in sorted(guild.channels, key=lambda c: (getattr(c, "position", 0), str(c.id))):
+            channels.append(
+                {
+                    "id": str(ch.id),
+                    "name": getattr(ch, "name", str(ch)),
+                    "type": str(getattr(ch, "type", "unknown")),
+                    "position": int(getattr(ch, "position", 0)),
+                }
+            )
+        rows.append(
+            {
+                "guild_id": str(guild.id),
+                "guild_name": guild.name,
+                "channel_count": len(channels),
+                "channels": channels,
+            }
+        )
+
+    if guild_filter and not rows:
+        return f"No connected guild matched guild_id={guild_filter}."
+    if not rows:
+        return "No connected guilds found."
+    return json.dumps({"guilds": rows}, indent=2)
 
 
 def start_discord_task():

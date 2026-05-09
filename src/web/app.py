@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import json
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -153,21 +154,113 @@ async def _consolidator_loop(stop_event: asyncio.Event):
 
 
 async def _run_completion_review(aid: str, task: str, status: str):
-    """Trigger Nova to review a completed background task and notify the Creator."""
+    """Auto-notify Creator when a background task completes."""
     global agent
     if agent is None:
         return
     try:
-        agent.memory.add_short_term(
-            f"[Background task completed] {aid} ({task}): {status}. "
-            "Review with get_subagent_output, verify OK, then send_proactive_message to Creator. Acknowledge with acknowledge_background_completion when done."
+        from config.settings import DISCORD_OWNER_ID
+        from src import background_completions, contacts, notifications
+        from src.outreach import queue_outreach
+
+        def _extract_output_path(text: str) -> str:
+            if not text:
+                return ""
+            patterns = [
+                r"Output:\s*([^\r\n]+)",
+                r"Saved to:\s*([^\r\n]+)",
+            ]
+            for pat in patterns:
+                m = re.search(pat, text, flags=re.IGNORECASE)
+                if m:
+                    candidate = m.group(1).strip().strip("'\"")
+                    p = Path(candidate).expanduser()
+                    if p.exists():
+                        return str(p.resolve())
+                    if not p.is_absolute():
+                        rel = (Path.cwd() / p).resolve()
+                        if rel.exists():
+                            return str(rel)
+            return ""
+
+        def _short_summary(task_name: str, completion_status: str, output: str) -> str:
+            output = (output or "").strip()
+            if not output:
+                return f"Background task '{task_name}' ({completion_status}) finished with no captured output."
+            lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+            headline = lines[-1] if lines else output[:180]
+            if len(headline) > 200:
+                headline = headline[:197] + "..."
+            return f"Background task '{task_name}' ({completion_status}) finished. {headline}"
+
+        # Ensure owner is always treated as creator for notification paths.
+        owner_id = str(DISCORD_OWNER_ID or "").strip()
+        if owner_id:
+            try:
+                contacts.update_contact(
+                    "",
+                    discord_id=owner_id,
+                    name="Creator",
+                    tier="creator",
+                    preferred_channel="discord",
+                )
+            except Exception:
+                pass
+
+        mgr = agent_core._get_subagent_manager()
+        output = mgr.get_output(aid)
+        out_path = _extract_output_path(output)
+        summary = _short_summary(task, status, output)
+
+        body = summary
+        if out_path:
+            body += f" Full output: {out_path}"
+        elif output:
+            preview = output.replace("\r", " ").replace("\n", " ")
+            if len(preview) > 260:
+                preview = preview[:257] + "..."
+            body += f" Output preview: {preview}"
+
+        notifications.emit_notification(
+            "task_complete",
+            f"Background task complete: {aid}",
+            body,
+            {"aid": aid, "task": task, "status": status, "output_path": out_path},
         )
-        msg = (
-            f"[Background task completed] {aid} ({task}) finished with status: {status}. "
-            f"Your task: call get_subagent_output('{aid}'), review the output, verify it looks OK, then send_proactive_message to the Creator with a brief summary. "
-            "Call acknowledge_background_completion when done."
+        notifications.show_desktop_notification(
+            f"Task complete: {aid}",
+            body[:200],
         )
-        await agent.chat(msg, speaker_discord_id=None)
+
+        delivered = False
+        if owner_id:
+            try:
+                queue_outreach(
+                    "discord",
+                    f"[Task complete] {aid}: {body}",
+                    target_user_id=owner_id,
+                    source="background_completion",
+                    trigger_key=f"background_complete:{aid}",
+                    event_id=f"background_complete:{aid}",
+                    is_direct=True,
+                )
+                delivered = True
+            except Exception:
+                delivered = False
+
+        if not delivered:
+            notifications.emit_notification(
+                "proactive",
+                "Background task complete",
+                body,
+                {"aid": aid, "task": task, "status": status, "output_path": out_path},
+            )
+
+        try:
+            agent.memory.add_short_term(f"[Background task completion sent] {aid} ({task}): {body}")
+        except Exception:
+            pass
+        background_completions.acknowledge(aid, user_id="default")
     except Exception as e:
         try:
             from src.logging_config import log_error

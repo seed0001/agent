@@ -57,4 +57,9 @@ def get_context_block(user_id: str = "default") -> str:
     if not pending:
         return ""
     lines = [f"- {e['aid']} ({e['task']}): {e['status']}" for e in pending]
-    return "\n## Pending background completions (review & notify Creator)\n" + "\n".join(lines) + "\n\nFor each: get_subagent_output(aid), verify OK, then send_proactive_message. Call acknowledge_background_completion(aid) when done.\n"
+    return (
+        "\n## Pending background completions (review & notify Creator)\n"
+        + "\n".join(lines)
+        + "\n\nFor each: get_subagent_output(aid), verify OK, then notify Creator (direct Discord/web fallback). "
+        "Call acknowledge_background_completion(aid) when done.\n"
+    )

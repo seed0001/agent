@@ -51,6 +51,8 @@ class OutreachConfig:
     blocked_contact_ids: list[str] = field(default_factory=list)
     preferred_channel: str = "discord"
     fallback_to_creator_web: bool = True
+    suppress_duplicates: bool = True
+    duplicate_window_seconds: int = 60
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "OutreachConfig":
@@ -71,6 +73,10 @@ class OutreachConfig:
             cfg.preferred_channel = data["preferred_channel"]
         if "fallback_to_creator_web" in data:
             cfg.fallback_to_creator_web = bool(data["fallback_to_creator_web"])
+        if "suppress_duplicates" in data:
+            cfg.suppress_duplicates = bool(data["suppress_duplicates"])
+        if "duplicate_window_seconds" in data:
+            cfg.duplicate_window_seconds = max(1, int(data["duplicate_window_seconds"]))
         return cfg
 
 
@@ -259,6 +265,7 @@ def maybe_queue_proactive_outreach(
     trigger_reason: str,
     channel: str | None = None,
     target_discord_id: str | None = None,
+    source: str = "proactive",
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Evaluate policy and queue a proactive message if allowed.
@@ -311,6 +318,9 @@ def maybe_queue_proactive_outreach(
         return entry
 
     tier = recipient.get("tier", "stranger")
+    if str(recipient.get("discord_id") or recipient.get("id") or "") == str(DISCORD_OWNER_ID or ""):
+        tier = "creator"
+        recipient["tier"] = "creator"
     cid = _contact_id(recipient)
     if cid in set(config.blocked_contact_ids):
         entry = _status_entry(status="blocked", recipient=recipient, message=msg, trigger_reason=trigger_reason, reason="blocked contact", channel=selected_channel)
@@ -331,8 +341,29 @@ def maybe_queue_proactive_outreach(
         _journal(entry)
         return entry
 
+    direct_override = source == "response_to_inbound" and contacts.can_send_direct(str(recipient.get("discord_id") or ""))
     if selected_channel == "discord" and recipient.get("discord_id"):
-        result = queue_outreach("discord", msg, target_user_id=str(recipient["discord_id"]))
+        result = queue_outreach(
+            "discord",
+            msg,
+            target_user_id=str(recipient["discord_id"]),
+            is_direct=direct_override,
+            source=source,
+            trigger_key=trigger_reason,
+            suppress_duplicates=config.suppress_duplicates,
+            dedup_window_seconds=config.duplicate_window_seconds,
+        )
+        if result.startswith("Duplicate suppressed"):
+            entry = _status_entry(
+                status="suppressed",
+                recipient=recipient,
+                message=msg,
+                trigger_reason=trigger_reason,
+                reason=result,
+                channel="discord",
+            )
+            _journal(entry)
+            return entry
         try:
             contacts.record_outbound(discord_id=str(recipient["discord_id"]))
         except Exception:
@@ -359,6 +390,8 @@ def status_summary() -> str:
         f"max_per_contact_per_day={config.max_per_contact_per_day}",
         f"cooldown_minutes={config.cooldown_minutes}",
         f"preferred_channel={config.preferred_channel}",
+        f"suppress_duplicates={config.suppress_duplicates}",
+        f"duplicate_window_seconds={config.duplicate_window_seconds}",
         f"journal={JOURNAL_PATH}",
     ]
     contacts_state = state.get("contacts", {})

@@ -40,6 +40,7 @@ DEFAULT_POLICY = {
         "list_knowledge_topics",
         "get_contacts",
         "update_contact",
+        "get_recent_images",
     ],
     "best_friend": [
         "search_web",
@@ -65,8 +66,13 @@ DEFAULT_POLICY = {
         "get_next_dag_step",
         "complete_dag_step",
         "send_proactive_message",
+        "send_discord_message",
         "generate_image",
         "get_image_usage",
+        "get_recent_images",
+        "list_connected_channels",
+        "post_to_channel",
+        "send_discord_attachment",
     ],
     "creator": None,  # full access
 }
@@ -85,6 +91,8 @@ def _load_policy() -> dict:
 
 def is_tool_allowed(tier: str, tool_name: str) -> bool:
     """True if the tier allows the tool. Creator always allowed."""
+    if tool_name == "send_discord_message" and tier in ("best_friend", "creator"):
+        return True
     if tier == "creator" or tier not in CONTACT_TIERS:
         return True
     policy = _load_policy()

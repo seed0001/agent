@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 
 IMAGE_GEN_MODEL = "grok-imagine-image"
 USAGE_PATH = DATA_DIR / "image_usage.json"
+METADATA_PATH = DATA_DIR / "generated_images.jsonl"
 DEFAULT_DAILY_LIMIT = 20  # configurable via env
 
 
@@ -71,10 +72,16 @@ def get_image_usage(daily_limit: int | None = None) -> str:
     today = str(date.today())
     today_count = data.get("by_date", {}).get(today, 0)
     remaining = max(0, limit - today_count)
+    recent_line = ""
+    recent = list_generated_images(limit=3)
+    if recent:
+        recent_names = ", ".join(Path(item["path"]).name for item in recent)
+        recent_line = f" Recent files: {recent_names}."
     return (
         f"Image generation usage: {today_count}/{limit} today, {remaining} remaining. "
         f"Total all-time: {data.get('total', 0)}. "
         f"Last used: {data.get('last_used', 'never')}"
+        f"{recent_line}"
     )
 
 
@@ -135,6 +142,9 @@ async def generate_image(
         date_str = date.today().isoformat()
         slug = re.sub(r"[^\w\-]", "", prompt.strip()[:40]) or "image"
         saved_paths: list[Path] = []
+        result_lines: list[str] = []
+        metadata_items: list[dict[str, Any]] = []
+        now_iso = datetime.now().isoformat()
         for i, u in enumerate(urls):
             try:
                 if u.startswith("http"):
@@ -156,7 +166,20 @@ async def generate_image(
                 out_path = IMAGE_OUTPUT_DIR / f"{base_name}{ext}"
                 out_path.write_bytes(raw)
                 saved_paths.append(out_path)
-                result_lines.append(f"Image {i+1}: {out_path}")
+                meta = {
+                    "created_at": now_iso,
+                    "prompt": prompt.strip(),
+                    "aspect_ratio": aspect_ratio,
+                    "model": IMAGE_GEN_MODEL,
+                    "index": i + 1,
+                    "path": str(out_path.resolve()),
+                    "filename": out_path.name,
+                    "size_bytes": len(raw),
+                }
+                metadata_items.append(meta)
+                result_lines.append(
+                    f"Image {i+1}: {meta['filename']} -> {meta['path']} ({meta['size_bytes']} bytes)"
+                )
             except Exception as ex:
                 url_preview = (u[:60] + "…") if len(str(u)) > 60 else u
                 result_lines.append(f"Image {i+1}: save failed ({ex}) — {url_preview}")
@@ -170,7 +193,58 @@ async def generate_image(
                 result_lines.append(f"Copy to: {dest}")
             except Exception as ex:
                 result_lines.append(f"Copy to {save_path} failed: {ex}")
-        result_lines.insert(0, f"Generated {len(urls)} image(s). All saved to {IMAGE_OUTPUT_DIR}")
+        for item in metadata_items:
+            _append_metadata(item)
+        result_lines.insert(
+            0,
+            f"Generated {len(saved_paths)} of {len(urls)} image(s). Output dir: {IMAGE_OUTPUT_DIR.resolve()}",
+        )
+        if metadata_items:
+            result_lines.insert(1, f"Prompt: {prompt.strip()}")
+            result_lines.insert(2, f"Metadata log: {METADATA_PATH.resolve()}")
         return "\n".join(result_lines)
     except Exception as e:
         return f"Error: {e}"
+
+
+def _append_metadata(entry: dict[str, Any]) -> None:
+    METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(METADATA_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def list_generated_images(limit: int = 20) -> list[dict[str, Any]]:
+    """Return recent generated image metadata entries (newest first)."""
+    if not METADATA_PATH.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        with open(METADATA_PATH, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict):
+                    rows.append(item)
+    except OSError:
+        return []
+    rows.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
+    return rows[: max(1, int(limit))]
+
+
+def get_recent_images(limit: int = 10) -> str:
+    """Human-readable listing of recent generated images."""
+    items = list_generated_images(limit=limit)
+    if not items:
+        return "No generated images recorded yet."
+    lines = [f"Recent generated images (showing {len(items)}):"]
+    for i, item in enumerate(items, start=1):
+        lines.append(
+            f"{i}. {item.get('filename', 'unknown')} | path={item.get('path', '')} | "
+            f"prompt={item.get('prompt', '')}"
+        )
+    return "\n".join(lines)

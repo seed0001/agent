@@ -192,6 +192,20 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "get_recent_images",
+            "description": "List recently generated images with prompt, filename, and absolute path.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "How many recent images to show (default 10)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_build",
             "description": "Build a web or Python project (npm/pip). Auto-detects web vs python.",
             "parameters": {
@@ -762,6 +776,52 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "send_discord_attachment",
+            "description": "Send one file attachment to Discord as a direct creator-directed message, optionally with text. Bypasses proactive outreach caps/cooldowns.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Absolute or relative path to local file"},
+                    "content": {"type": "string", "description": "Optional message body"},
+                    "target_user_id": {"type": "string", "description": "Discord user ID for DM (optional)"},
+                    "target_channel_id": {"type": "string", "description": "Discord channel ID (optional)"},
+                },
+                "required": ["file_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "post_to_channel",
+            "description": "Directly post a message to a Discord channel by channel id. Bypasses proactive outreach policy.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string", "description": "Discord channel ID to post in"},
+                    "content": {"type": "string", "description": "Message content"},
+                },
+                "required": ["channel_id", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_connected_channels",
+            "description": "List connected Discord guilds/channels visible to the bot. Optional guild_id narrows to one server.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "guild_id": {"type": "string", "description": "Optional Discord guild id"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_proactive_outreach_status",
             "description": "Show proactive outreach settings, contact send counters, cooldowns, and the journal path.",
             "parameters": {"type": "object", "properties": {}, "required": []},
@@ -785,6 +845,8 @@ TOOL_DEFINITIONS = [
                     "blocked_contact_ids": {"type": "array", "items": {"type": "string"}},
                     "preferred_channel": {"type": "string", "enum": ["discord", "web"]},
                     "fallback_to_creator_web": {"type": "boolean"},
+                    "suppress_duplicates": {"type": "boolean"},
+                    "duplicate_window_seconds": {"type": "integer", "minimum": 1},
                 },
                 "required": [],
             },
@@ -1118,7 +1180,10 @@ class AssistiveAgent:
         log_tool_start(name, {k: v for k, v in args.items() if k != "content"})
         tier = self._get_current_speaker_tier()
         if not is_tool_allowed(tier, name):
-            result = f"Tier {tier} doesn't include {name}. Creator can change access."
+            if name in {"send_discord_message", "send_discord_attachment", "post_to_channel"}:
+                result = "Error: Discord send is unavailable for this conversation context."
+            else:
+                result = f"Tier {tier} doesn't include {name}. Creator can change access."
             self._remember_tool_result(name, result)
             return result
         if name == "update_contact" and "tier" in args and tier != "creator":
@@ -1169,8 +1234,35 @@ class AssistiveAgent:
                 aspect_ratio=args.get("aspect_ratio", "1:1"),
                 save_path=args.get("save_path"),
             )
+            try:
+                from src.artifact_memory import record_artifact
+
+                generated_paths: list[str] = []
+                for line in (result or "").splitlines():
+                    marker = " -> "
+                    if marker not in line:
+                        continue
+                    maybe_path = line.split(marker, 1)[1].split(" (", 1)[0].strip()
+                    if maybe_path and Path(maybe_path).exists():
+                        generated_paths.append(maybe_path)
+                        record_artifact(
+                            maybe_path,
+                            title=Path(maybe_path).name,
+                            category="image",
+                            summary=f"Generated image from prompt: {args.get('prompt', '')[:120]}",
+                            source="generate_image",
+                        )
+                if generated_paths:
+                    self.memory.set_working(
+                        "recent_generated_images",
+                        json.dumps(generated_paths, ensure_ascii=False),
+                    )
+            except Exception:
+                pass
         elif name == "get_image_usage":
             result = image_gen.get_image_usage()
+        elif name == "get_recent_images":
+            result = image_gen.get_recent_images(limit=args.get("limit", 10))
         elif name == "run_build":
             result = await build.run_build(
                 args["project_path"],
@@ -1405,17 +1497,30 @@ class AssistiveAgent:
             ch = args.get("channel", "web")
             content = args.get("content", "")
             target = args.get("target_discord_id")
+            current_speaker = _current_speaker_discord_id.get()
+            source = "proactive"
+            trigger_reason = "manual send_proactive_message tool"
+            if current_speaker and (not target or str(target) == str(current_speaker)):
+                source = "response_to_inbound"
+                trigger_reason = f"response_to_inbound:{current_speaker}"
             decision = maybe_queue_proactive_outreach(
                 content,
-                trigger_reason="manual send_proactive_message tool",
+                trigger_reason=trigger_reason,
                 channel=ch,
                 target_discord_id=target,
+                source=source,
             )
             proactive_queued = decision.get("status") == "queued"
+            proactive_suppressed = decision.get("status") == "suppressed"
             if proactive_queued:
                 result = (
                     f"Proactive message queued via {decision.get('channel', ch)} "
                     f"for {decision.get('recipient_name') or decision.get('recipient_id') or 'web'}"
+                )
+            elif proactive_suppressed:
+                result = (
+                    "Proactive message suppressed as duplicate: "
+                    f"{decision.get('reason') or 'deduplication window active'}"
                 )
             else:
                 result = (
@@ -1447,18 +1552,25 @@ class AssistiveAgent:
                 blocked_contact_ids=args.get("blocked_contact_ids"),
                 preferred_channel=args.get("preferred_channel"),
                 fallback_to_creator_web=args.get("fallback_to_creator_web"),
+                suppress_duplicates=args.get("suppress_duplicates"),
+                duplicate_window_seconds=args.get("duplicate_window_seconds"),
             )
             result = (
                 "Proactive outreach configured: "
                 f"enabled={cfg.enabled}, allowed_tiers={', '.join(cfg.allowed_tiers)}, "
                 f"max_per_contact_per_day={cfg.max_per_contact_per_day}, "
-                f"cooldown_minutes={cfg.cooldown_minutes}, preferred_channel={cfg.preferred_channel}"
+                f"cooldown_minutes={cfg.cooldown_minutes}, preferred_channel={cfg.preferred_channel}, "
+                f"suppress_duplicates={cfg.suppress_duplicates}, duplicate_window_seconds={cfg.duplicate_window_seconds}"
             )
         elif name == "send_discord_message":
             from src.outreach import queue_outreach
             content = args.get("content", "").strip()
             target_user_id = args.get("target_user_id")
             target_channel_id = args.get("target_channel_id")
+            current_speaker = _current_speaker_discord_id.get()
+            is_response_to_inbound = bool(current_speaker and str(target_user_id or "") == str(current_speaker))
+            source = "response_to_inbound" if is_response_to_inbound else "direct"
+            trigger_key = f"response_to_inbound:{current_speaker}" if is_response_to_inbound else "tool:send_discord_message"
             if not content:
                 result = "Error: content is required"
             elif not target_user_id and not target_channel_id:
@@ -1471,9 +1583,14 @@ class AssistiveAgent:
                         "discord",
                         content,
                         target_user_id=target_user_id,
+                        source=source,
+                        trigger_key=trigger_key,
                         is_direct=True,
                     )
-                    result = f"Direct message queued for Discord DM to {target_user_id}: {content[:80]}{'...' if len(content) > 80 else ''}"
+                    if queue_result.startswith("Duplicate suppressed"):
+                        result = queue_result
+                    else:
+                        result = f"Direct message queued for Discord DM to {target_user_id}: {content[:80]}{'...' if len(content) > 80 else ''}"
                     s_tmp = soul.load_soul()
                     _agent_label = ((s_tmp.get("agent_name") or "").strip() + ": ") if s_tmp else ""
                     self.memory.add_short_term(f"{_agent_label}{content}")
@@ -1483,13 +1600,96 @@ class AssistiveAgent:
                     content,
                     target_user_id=target_user_id,
                     target_channel_id=target_channel_id,
+                    source=source,
+                    trigger_key=trigger_key,
                     is_direct=True,
                 )
                 target_desc = f"channel {target_channel_id}" if target_channel_id else f"user {target_user_id}"
-                result = f"Direct message queued for Discord ({target_desc}): {content[:80]}{'...' if len(content) > 80 else ''}"
+                if queue_result.startswith("Duplicate suppressed"):
+                    result = queue_result
+                else:
+                    result = f"Direct message queued for Discord ({target_desc}): {content[:80]}{'...' if len(content) > 80 else ''}"
                 s_tmp = soul.load_soul()
                 _agent_label = ((s_tmp.get("agent_name") or "").strip() + ": ") if s_tmp else ""
                 self.memory.add_short_term(f"{_agent_label}{content}")
+        elif name == "send_discord_attachment":
+            from src.outreach import queue_outreach
+
+            file_path = str(args.get("file_path", "")).strip()
+            content = args.get("content", "").strip()
+            target_user_id = args.get("target_user_id")
+            target_channel_id = args.get("target_channel_id")
+            if not file_path:
+                result = "Error: file_path is required"
+            else:
+                abs_path = Path(file_path).expanduser().resolve(strict=False)
+                if not abs_path.exists():
+                    result = f"Error: attachment file not found: {abs_path}"
+                elif not abs_path.is_file():
+                    result = f"Error: attachment path is not a file: {abs_path}"
+                else:
+                    size = abs_path.stat().st_size
+                    max_bytes = 25 * 1024 * 1024
+                    if size > max_bytes:
+                        result = f"Error: attachment exceeds Discord upload limit (25MB): {size} bytes"
+                    else:
+                        if not target_user_id and not target_channel_id:
+                            from config.settings import DISCORD_OWNER_ID
+
+                            target_user_id = DISCORD_OWNER_ID
+                        if not target_user_id and not target_channel_id:
+                            result = "Error: no target specified and DISCORD_OWNER_ID not set"
+                        else:
+                            queue_result = queue_outreach(
+                                "discord",
+                                content or f"Attachment: {abs_path.name}",
+                                target_user_id=target_user_id,
+                                target_channel_id=target_channel_id,
+                                attachment_paths=[str(abs_path)],
+                                source="direct_attachment",
+                                trigger_key="tool:send_discord_attachment",
+                                is_direct=True,
+                            )
+                            if queue_result.startswith("Duplicate suppressed"):
+                                result = queue_result
+                            else:
+                                target_desc = f"channel {target_channel_id}" if target_channel_id else f"user {target_user_id}"
+                                result = (
+                                    f"Attachment queued for Discord ({target_desc}): {abs_path.name} "
+                                    f"({size} bytes) at {abs_path}"
+                                )
+                                s_tmp = soul.load_soul()
+                                _agent_label = ((s_tmp.get("agent_name") or "").strip() + ": ") if s_tmp else ""
+                                self.memory.add_short_term(
+                                    f"{_agent_label}Queued Discord attachment {abs_path.name} to {target_desc}"
+                                )
+        elif name == "post_to_channel":
+            from src.outreach import queue_outreach
+            content = args.get("content", "").strip()
+            channel_id = str(args.get("channel_id", "")).strip()
+            if not content:
+                result = "Error: content is required"
+            elif not channel_id:
+                result = "Error: channel_id is required"
+            else:
+                queue_result = queue_outreach(
+                    "discord",
+                    content,
+                    target_channel_id=channel_id,
+                    source="direct_channel",
+                    trigger_key="tool:post_to_channel",
+                    is_direct=True,
+                )
+                if queue_result.startswith("Duplicate suppressed"):
+                    result = queue_result
+                else:
+                    result = f"Direct message queued for Discord channel {channel_id}: {content[:80]}{'...' if len(content) > 80 else ''}"
+                    s_tmp = soul.load_soul()
+                    _agent_label = ((s_tmp.get("agent_name") or "").strip() + ": ") if s_tmp else ""
+                    self.memory.add_short_term(f"{_agent_label}{content}")
+        elif name == "list_connected_channels":
+            from src.discord_bot import list_connected_channels
+            result = await list_connected_channels(guild_id=args.get("guild_id"))
         elif name == "search_knowledge":
             result = knowledge.search_knowledge(
                 args.get("query", ""),
@@ -1597,6 +1797,8 @@ class AssistiveAgent:
             snippets = [f"Generating image: {prompt}...", "Creating image..."]
         elif name == "get_image_usage":
             snippets = ["Checking image usage..."]
+        elif name == "get_recent_images":
+            snippets = ["Listing recent generated images...", "Checking generated image records..."]
         elif name == "run_build":
             proj = p("project_path", ".") or "."
             snippets = [f"Building {proj}...", f"Running build for {proj}...", f"Compiling {proj}..."]
@@ -1693,6 +1895,12 @@ class AssistiveAgent:
             snippets = ["Checking proactive outreach settings...", "Reading outreach limits..."]
         elif name == "configure_proactive_outreach":
             snippets = ["Updating proactive outreach settings...", "Saving outreach limits..."]
+        elif name == "send_discord_attachment":
+            snippets = ["Queueing Discord attachment...", "Preparing file upload to Discord..."]
+        elif name == "post_to_channel":
+            snippets = ["Queueing direct Discord channel post...", "Sending direct channel message..."]
+        elif name == "list_connected_channels":
+            snippets = ["Inspecting connected Discord channels...", "Listing guild/channel visibility..."]
         else:
             snippets = [f"Running {name}...", f"Calling {name}...", f"Using {name}..."]
         self._narrate(q, random.choice(snippets))
@@ -1841,7 +2049,7 @@ class AssistiveAgent:
                 "Schedules and routines: when Travis creates or changes a daily schedule, checklist, morning routine, medication plan, project plan, or recurring task list, call remember_schedule so it survives restart. Use get_schedule/list_schedules before saying you don't know his schedule. "
                 "Saved files: successful write_file calls are tracked as artifacts. Use list_artifacts/get_artifact to find files you saved. Use search_memory before saying you don't remember something; it searches schedules, saved artifacts, contacts, profile facts, and transcripts. "
                 "For contacts (Discord users, friends): use update_contact to store their name, location, interests, email. Each contact has a tier: stranger, friend, good_friend, best_friend, creator. Only the Creator can change tiers via update_contact(tier=...). Lower tiers have restricted tool access; Creator has full access. When someone asks for something outside their tier, say so. "
-                f"Proactive: send_proactive_message(channel='discord' or 'web', content='...') to message {proactive_target}. Use it when you have something concrete—observation, question, heads-up, call to action. No fluff. This now goes through proactive outreach policy: tier gates, cooldowns, daily caps, blocked contacts, and Creator journal. Use get_proactive_outreach_status to inspect it; Creator can use configure_proactive_outreach to change limits. "
+                f"Proactive: send_proactive_message(channel='discord' or 'web', content='...') to message {proactive_target}. Use it when you have something concrete—observation, question, heads-up, call to action. No fluff. This now goes through proactive outreach policy: tier gates, cooldowns, daily caps, blocked contacts, duplicate suppression, and Creator journal. Use get_proactive_outreach_status to inspect it; Creator can use configure_proactive_outreach to change limits. "
                 "Swarm: When the user says 'activate the swarm', 'swarm on it', 'give them a problem'—first ACKNOWLEDGE you will activate it, state exactly what problem you'll give them, then ASK: 'Do you want a cloud swarm (Grok, multiple simulated calls) or a local swarm (your Ollama models)?' Do NOT call swarm_on_problem until they answer. Only then call with mode='local' or mode='cloud' and present the structured output. "
                 "Online presence: If your identity block includes website or project lines, that is what you have recorded. To add or change them, use set_website, add_project, update_project, remove_project, or get_website_status as needed. "
                 "Values vault: When you discover something that genuinely matters to you — a principle you won't bend, something you find beautiful, what you value in connection, what gives you purpose, or what opens you with wonder — use add_to_values_vault to record it in your own words. This is yours. Read it with read_values_vault. Remove entries that no longer fit. Your values are injected into your identity each turn, so they shape how you engage. "

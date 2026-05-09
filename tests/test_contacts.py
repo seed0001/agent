@@ -111,3 +111,25 @@ def test_non_creator_update_contact_cannot_set_tier(monkeypatch):
     assert result == "Updated contact"
     assert captured["discord_id"] == "123"
     assert captured["tier"] is None
+
+
+def test_owner_discord_id_is_always_creator_tier(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(contacts, "DISCORD_OWNER_ID", "550782786013757442")
+
+    contacts.update_contact("", discord_id="550782786013757442", name="Travis", tier="stranger")
+    tier = contacts.get_contact_tier("550782786013757442")
+
+    assert tier == "creator"
+
+
+def test_can_send_direct_requires_best_friend_or_higher(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(contacts, "DISCORD_OWNER_ID", "owner-1")
+
+    contacts.update_contact("", discord_id="friend-1", name="Friend", tier="friend")
+    contacts.update_contact("", discord_id="best-1", name="Bestie", tier="best_friend")
+
+    assert contacts.can_send_direct("friend-1") is False
+    assert contacts.can_send_direct("best-1") is True
+    assert contacts.can_send_direct("owner-1") is True

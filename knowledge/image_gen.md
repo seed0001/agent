@@ -23,7 +23,10 @@ Generate images from text prompts via xAI's Grok Imagine API. Use for visual con
 3. Every image is automatically saved to `generated_images/` (or `IMAGE_OUTPUT_DIR`). Optional `save_path` copies the first image to an additional location.
 
 **Output:**
-- All images saved to `generated_images/` (project root, gitignored). Override with `IMAGE_OUTPUT_DIR` in `.env` (e.g. `~/Pictures/Adam`).
+- Every generation returns per-image metadata: filename, absolute path, size, and prompt.
+- All images are saved to `generated_images/` (project root, gitignored). Override with `IMAGE_OUTPUT_DIR` in `.env` (e.g. `~/Pictures/Adam`).
+- Metadata is appended to `data/generated_images.jsonl`.
+- `get_recent_images(limit=10)` lists recent generated files with prompt + path for follow-up usage.
 
 **Budget:**
 - Daily limit defaults to 20. Set `IMAGE_GEN_DAILY_LIMIT` in `.env` to change.

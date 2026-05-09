@@ -24,6 +24,8 @@ Defaults:
 - `cooldown_minutes=180`
 - `preferred_channel="discord"`
 - `fallback_to_creator_web=true`
+- `suppress_duplicates=true`
+- `duplicate_window_seconds=60`
 
 Contacts marked `do_not_contact=true`, contacts with notes containing "do not
 contact", blocked contact IDs, and tiers outside `allowed_tiers` are blocked.
@@ -47,6 +49,9 @@ Every queued or blocked decision is written as JSONL to:
 
 Entries include timestamp, status, recipient, tier, channel, trigger reason,
 message, and block/queue reason. This is the Creator audit trail.
+
+Duplicate suppression runs at the outbound Discord queue boundary, so proactive
+and direct send paths share the same dedup window.
 
 ## Tools
 
