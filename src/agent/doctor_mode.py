@@ -1,9 +1,10 @@
 """Doctor Mode: built-in self-healing when something breaks."""
+from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Awaitable
 
-type FixStrategy = Callable[..., Awaitable[Any]]
+FixStrategy = Callable[..., Awaitable[Any]]
 
 
 class FailureKind(Enum):

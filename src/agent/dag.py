@@ -1,9 +1,10 @@
 """DAG-based task orchestration with redirect on failure."""
+from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, TypeAlias
 
-type NodeAction = Callable[..., Awaitable[Any]]
+NodeAction: TypeAlias = Callable[..., Awaitable[Any]]
 
 
 class NodeStatus(Enum):
