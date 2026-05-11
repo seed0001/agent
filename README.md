@@ -28,6 +28,32 @@ Optional: Install Ollama + `llama3.2` for the intuition and existential layers.
 
 ---
 
+## Support / Installation Help
+
+Need help installing Andrew or getting the framework running?
+
+Join **Andrew's Place**, the public support and onboarding Discord server:
+
+**https://discord.gg/QmUvhGSrt4**
+
+Support flow:
+
+1. Join the server.
+2. Read `#welcome` and check `#resources` first.
+3. If you get stuck, post in `#help-desk`.
+4. Include:
+   - your operating system
+   - Python version
+   - which provider/model you are trying to use
+   - the exact error message or screenshot
+   - what step you were on when it failed
+
+The goal of Andrew's Place is simple: help people install the framework, ask questions, report bugs, and learn how to build their own version of Andrew without being left alone with confusing setup errors.
+
+This is an Alpha project, so rough edges are expected. Clear bug reports and install notes help improve the framework for everyone.
+
+---
+
 ## Cost Tracking
 
 - Token/cost tracking is persisted in `data/profiles/default/cost_tracking.db`.
