@@ -1115,6 +1115,60 @@ def _recover_text_tool_call(content: str) -> dict[str, Any] | None:
     return None
 
 
+def _sanitize_message_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove invalid/incomplete tool-call sequences from chat history.
+
+    OpenAI-compatible APIs require exact ordering:
+    assistant(with tool_calls) -> one tool response per tool_call_id -> next turn.
+    If a tool run crashes mid-sequence, we drop that partial block so the next
+    request can proceed instead of getting stuck in repeated 400 errors.
+    """
+    cleaned: list[dict[str, Any]] = []
+    pending_ids: set[str] = set()
+    pending_start_idx: int | None = None
+
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            tool_calls = msg.get("tool_calls") or []
+            ids = {
+                str(tc.get("id", "")).strip()
+                for tc in tool_calls
+                if isinstance(tc, dict) and str(tc.get("id", "")).strip()
+            }
+            if ids:
+                pending_ids = set(ids)
+                pending_start_idx = len(cleaned)
+                cleaned.append(msg)
+                continue
+            cleaned.append(msg)
+            continue
+
+        if role == "tool":
+            tcid = str(msg.get("tool_call_id", "")).strip()
+            if pending_ids and tcid in pending_ids:
+                cleaned.append(msg)
+                pending_ids.discard(tcid)
+                if not pending_ids:
+                    pending_start_idx = None
+            # Drop orphan/mismatched tool messages.
+            continue
+
+        # Any non-tool turn while tool responses are pending invalidates that
+        # prior assistant tool-call block; drop the partial block.
+        if pending_ids and pending_start_idx is not None:
+            cleaned = cleaned[:pending_start_idx]
+            pending_ids.clear()
+            pending_start_idx = None
+        cleaned.append(msg)
+
+    # Drop trailing incomplete tool-call block.
+    if pending_ids and pending_start_idx is not None:
+        cleaned = cleaned[:pending_start_idx]
+
+    return cleaned
+
+
 class AssistiveAgent:
     """Main agent: LLM provider + memory + Doctor Mode."""
 
@@ -2080,6 +2134,7 @@ class AssistiveAgent:
         if bio or ex:
             system_prompt += f"\n\n## Internal state (drives)\n{bio}\n{ex}"
 
+        self.messages = _sanitize_message_history(self.messages)
         messages_for_api = [{"role": "system", "content": system_prompt}] + self.messages
 
         attempts = 0
@@ -2121,6 +2176,27 @@ class AssistiveAgent:
         content = msg.content or ""
 
         if msg.tool_calls:
+            # OpenAI-compatible APIs require tool-role messages to be preceded
+            # by the assistant message that declared those tool calls.
+            assistant_tool_calls: list[dict[str, Any]] = []
+            for tc in msg.tool_calls:
+                assistant_tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments or "{}",
+                        },
+                    }
+                )
+            self.messages.append(
+                {
+                    "role": "assistant",
+                    "content": content or "",
+                    "tool_calls": assistant_tool_calls,
+                }
+            )
             tool_failures = getattr(self, "_tool_failure_count", 0)
             failed_tools = getattr(self, "_failed_tool_names", [])
             failed_results = getattr(self, "_failed_tool_results", [])
@@ -2132,7 +2208,13 @@ class AssistiveAgent:
                 except json.JSONDecodeError:
                     args = {}
                 self._narrate_tool(narrate_queue, name, args)
-                result = await self._run_tool(name, args)
+                try:
+                    result = await self._run_tool(name, args)
+                except Exception as e:
+                    # Never leave an unmatched tool_call without a tool result.
+                    # Return a structured error so message ordering stays valid.
+                    log_error("tool_execution", e)
+                    result = f"Error: tool '{name}' execution crashed: {e}"
                 was_error = _is_tool_error(result) or "[Doctor Mode]" in str(result)
                 if was_error:
                     tool_failures += 1
