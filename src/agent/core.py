@@ -1,4 +1,4 @@
-"""Core agent: Grok 3 client, tool routing, Doctor Mode integration."""
+"""Core agent: provider-backed LLM client, tool routing, Doctor Mode integration."""
 import asyncio
 from contextvars import ContextVar
 import json
@@ -9,7 +9,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from config.settings import XAI_API_KEY, XAI_BASE_URL, XAI_MODEL, DISCORD_OWNER_ID
+from config.settings import DISCORD_OWNER_ID, get_api_key, get_base_url, get_chat_model, get_llm_provider
 from src.agent.biology import DriveState
 from src.agent.dag import DAGOrchestrator
 from src.agent.doctor_mode import DoctorMode, FailureEvent, FailureKind
@@ -1116,11 +1116,12 @@ def _recover_text_tool_call(content: str) -> dict[str, Any] | None:
 
 
 class AssistiveAgent:
-    """Main agent: Grok 3 + memory + Doctor Mode."""
+    """Main agent: LLM provider + memory + Doctor Mode."""
 
     def __init__(self, user_id: str = "default"):
-        self.client = AsyncOpenAI(api_key=XAI_API_KEY, base_url=XAI_BASE_URL)
-        self.model = XAI_MODEL
+        self.provider = get_llm_provider()
+        self.client = AsyncOpenAI(api_key=get_api_key(), base_url=get_base_url())
+        self.model = get_chat_model()
         self.memory = MemoryStore(user_id=user_id)
         self.biology = DriveState(self.memory.user_dir)
         from src.existential_layer import ExistentialState
@@ -1938,7 +1939,6 @@ class AssistiveAgent:
                         return response
             except Exception as e:
                 # Don't let a command error break the chat loop.
-                from src.logging_config import log_error
                 try:
                     log_error("memory_commands", e)
                 except Exception:

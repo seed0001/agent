@@ -27,10 +27,85 @@ IMAGE_OUTPUT_DIR = Path(
 for d in (DATA_DIR, MEMORY_DIR, USER_PROFILES_DIR, LOGS_DIR, KNOWLEDGE_DIR, RESEARCH_OUTPUT_DIR, TRAINING_DATA_DIR, SOUL_TRAINING_DIR, VOICES_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
+# LLM provider (xAI is default for backward compatibility)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "xai").strip().lower()
+
 # xAI Grok
 XAI_API_KEY = os.getenv("XAI_API_KEY", "")
 XAI_BASE_URL = "https://api.x.ai/v1"
 XAI_MODEL = os.getenv("XAI_MODEL", "grok-3")
+
+# OpenAI
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+
+# Mistral AI (OpenAI-compatible API)
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
+MISTRAL_BASE_URL = os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1")
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-medium-latest")
+MISTRAL_IMAGE_MODEL = os.getenv("MISTRAL_IMAGE_MODEL", "")
+
+# xAI image model
+XAI_IMAGE_MODEL = os.getenv("XAI_IMAGE_MODEL", "grok-imagine-image")
+
+
+def get_llm_provider() -> str:
+    """Return normalized provider name: 'xai', 'openai', or 'mistral'."""
+    if LLM_PROVIDER in {"openai", "mistral"}:
+        return LLM_PROVIDER
+    return "xai"
+
+
+def get_chat_model() -> str:
+    """Return active chat model for the selected provider."""
+    provider = get_llm_provider()
+    if provider == "openai":
+        return OPENAI_MODEL
+    if provider == "mistral":
+        return MISTRAL_MODEL
+    return XAI_MODEL
+
+
+def get_api_key() -> str:
+    """Return active API key for the selected provider."""
+    provider = get_llm_provider()
+    if provider == "openai":
+        return OPENAI_API_KEY
+    if provider == "mistral":
+        return MISTRAL_API_KEY
+    return XAI_API_KEY
+
+
+def get_base_url() -> str:
+    """Return active base URL for the selected provider."""
+    provider = get_llm_provider()
+    if provider == "openai":
+        return OPENAI_BASE_URL
+    if provider == "mistral":
+        return MISTRAL_BASE_URL
+    return XAI_BASE_URL
+
+
+def get_api_key_env_name() -> str:
+    """Return env var name for selected provider API key."""
+    provider = get_llm_provider()
+    if provider == "openai":
+        return "OPENAI_API_KEY"
+    if provider == "mistral":
+        return "MISTRAL_API_KEY"
+    return "XAI_API_KEY"
+
+
+def get_image_model() -> str:
+    """Return active image model for the selected provider."""
+    provider = get_llm_provider()
+    if provider == "openai":
+        return OPENAI_IMAGE_MODEL
+    if provider == "mistral":
+        return MISTRAL_IMAGE_MODEL
+    return XAI_IMAGE_MODEL
 
 # Voice
 EDGE_TTS_VOICE = "en-GB-RyanNeural"  # British male - Ryan (fallback)

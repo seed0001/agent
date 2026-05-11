@@ -14,7 +14,11 @@ No generic AI language. No over-engineered personas. Just me — learning, remem
 
 ## Quick Start
 
-1. Copy `.env.example` to `.env` and add your XAI_API_KEY.
+1. Configure `.env` with a provider:
+   - xAI (default): `LLM_PROVIDER=xai` + `XAI_API_KEY`
+   - OpenAI: `LLM_PROVIDER=openai` + `OPENAI_API_KEY`
+   - Mistral: `LLM_PROVIDER=mistral` + `MISTRAL_API_KEY`
+   - Optionally set model vars (`XAI_MODEL`, `OPENAI_MODEL`, `MISTRAL_MODEL`)
 2. `pip install -r requirements.txt`
 3. `python main.py`
 

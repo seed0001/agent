@@ -25,7 +25,7 @@ load_dotenv()
 
 from openai import AsyncOpenAI
 
-from config.settings import XAI_API_KEY, XAI_BASE_URL, XAI_MODEL
+from config.settings import get_api_key, get_base_url, get_chat_model
 from src.agent.memory_stores import EpisodicStore, ProfileStore, ThoughtStore
 
 
@@ -251,9 +251,9 @@ def _build_user_prompt(profile_facts: str, recent: list[str], retry_reason: str 
     return "\n\n".join(sections)
 
 
-async def _generate(client: AsyncOpenAI, system: str, user: str) -> str:
+async def _generate(client: AsyncOpenAI, model: str, system: str, user: str) -> str:
     response = await client.chat.completions.create(
-        model=XAI_MODEL,
+        model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -277,8 +277,9 @@ async def run_once(user_id: str = "default") -> str:
     )
     user_prompt = _build_user_prompt(profile_facts, recent)
 
-    client = AsyncOpenAI(api_key=XAI_API_KEY, base_url=XAI_BASE_URL)
-    thought = await _generate(client, system_prompt, user_prompt)
+    model = get_chat_model()
+    client = AsyncOpenAI(api_key=get_api_key(), base_url=get_base_url())
+    thought = await _generate(client, model, system_prompt, user_prompt)
 
     delivered = False
     reject_reason = ""
@@ -289,7 +290,7 @@ async def run_once(user_id: str = "default") -> str:
         ok, reason = _filter_thought(thought, agent_name, owner_name, recent)
         if not ok:
             retry_user = _build_user_prompt(profile_facts, recent, retry_reason=reason)
-            thought_retry = await _generate(client, system_prompt, retry_user)
+            thought_retry = await _generate(client, model, system_prompt, retry_user)
             if thought_retry and thought_retry.strip().upper() != "SKIP":
                 ok2, reason2 = _filter_thought(thought_retry, agent_name, owner_name, recent)
                 if ok2:

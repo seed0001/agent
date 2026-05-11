@@ -96,20 +96,21 @@ async def _background_thoughts_loop():
 
 
 def _build_consolidator_llm():
-    """Return an async (system, user) -> str function backed by the xAI client.
+    """Return an async (system, user) -> str function backed by the configured LLM provider.
 
     The consolidator is decoupled from any specific provider — we inject this
     closure so unit tests can stub it out without touching HTTP.
     """
     from openai import AsyncOpenAI
 
-    from config.settings import XAI_API_KEY, XAI_BASE_URL, XAI_MODEL
+    from config.settings import get_api_key, get_base_url, get_chat_model
 
-    client = AsyncOpenAI(api_key=XAI_API_KEY, base_url=XAI_BASE_URL)
+    client = AsyncOpenAI(api_key=get_api_key(), base_url=get_base_url())
+    model = get_chat_model()
 
     async def _call(system: str, user: str) -> str:
         resp = await client.chat.completions.create(
-            model=XAI_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

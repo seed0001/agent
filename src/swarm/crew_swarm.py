@@ -1,28 +1,36 @@
 """
-CrewAI-based cloud swarm: multi-agent analysis with Grok.
+CrewAI-based cloud swarm: multi-agent analysis with configured LLM provider.
 
 When mode=cloud, swarm_on_problem uses this instead of the raw run_cloud.
 Local mode (Ollama) stays unchanged.
 """
 from src.swarm.signal import Signal
 
-from config.settings import XAI_API_KEY, XAI_BASE_URL, XAI_MODEL
+from config.settings import (
+    get_api_key,
+    get_api_key_env_name,
+    get_base_url,
+    get_chat_model,
+)
 
 
-def _grok_llm():
-    """LLM for xAI Grok (OpenAI-compatible)."""
+def _provider_llm():
+    """LLM for configured OpenAI-compatible provider."""
     from crewai import LLM
+    model = get_chat_model()
+    base_url = get_base_url()
+    api_key = get_api_key()
     return LLM(
-        model=XAI_MODEL,
-        base_url=XAI_BASE_URL,
-        api_key=XAI_API_KEY,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
         temperature=0.5,
     )
 
 
 async def run_crew_cloud(problem: str, context: str, prompt_prefix: str = "") -> Signal:
     """
-    Run the CrewAI swarm on the cloud (Grok).
+    Run the CrewAI swarm on the cloud provider.
 
     problem: The problem to solve
     context: Optional background/constraints
@@ -38,10 +46,14 @@ async def run_crew_cloud(problem: str, context: str, prompt_prefix: str = "") ->
             metadata={"source": "crew_swarm"},
         )
 
-    if not XAI_API_KEY:
+    api_key = get_api_key()
+    if not api_key:
         return Signal(
             type="response",
-            content="[Crew swarm] XAI_API_KEY not set. Cloud swarm requires xAI API.",
+            content=(
+                "[Crew swarm] API key not set for cloud swarm. "
+                f"Set {get_api_key_env_name()} in .env."
+            ),
             strength=1.0,
             metadata={"source": "crew_swarm"},
         )
@@ -71,7 +83,7 @@ def _create_crew_with_inputs(problem: str, context: str, prompt_prefix: str = ""
     """Build crew with problem/context injected into task descriptions."""
     from crewai import Agent, Crew, Process, Task
 
-    llm = _grok_llm()
+    llm = _provider_llm()
 
     technical_analyst = Agent(
         role="Technical Analyst",

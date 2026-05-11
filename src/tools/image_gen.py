@@ -1,5 +1,5 @@
 """
-Image generation via xAI Grok Imagine API (grok-imagine-image).
+Image generation via configured OpenAI-compatible provider.
 Usage tracking for budget control. All images saved to IMAGE_OUTPUT_DIR (gitignored).
 Image generation and download can take 30-60+ seconds; extended timeouts used.
 """
@@ -10,10 +10,17 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from config.settings import DATA_DIR, IMAGE_OUTPUT_DIR, XAI_API_KEY, XAI_BASE_URL
+from config.settings import (
+    DATA_DIR,
+    IMAGE_OUTPUT_DIR,
+    get_api_key,
+    get_api_key_env_name,
+    get_base_url,
+    get_image_model,
+    get_llm_provider,
+)
 from openai import AsyncOpenAI
 
-IMAGE_GEN_MODEL = "grok-imagine-image"
 USAGE_PATH = DATA_DIR / "image_usage.json"
 METADATA_PATH = DATA_DIR / "generated_images.jsonl"
 DEFAULT_DAILY_LIMIT = 20  # configurable via env
@@ -107,12 +114,21 @@ async def generate_image(
     daily_limit: int | None = None,
 ) -> str:
     """
-    Generate images from text via xAI Grok Imagine API.
+    Generate images from text via configured provider image API.
     Returns URL(s) or saves to file. Tracks usage for budget.
     """
     import os
-    if not XAI_API_KEY:
-        return "Error: XAI_API_KEY not set. Configure in .env for image generation."
+    provider = get_llm_provider()
+    api_key = get_api_key()
+    if not api_key:
+        key_name = get_api_key_env_name()
+        return f"Error: {key_name} not set. Configure in .env for image generation."
+    model = get_image_model()
+    if not model:
+        return (
+            "Error: image generation model is not configured for this provider. "
+            "Set MISTRAL_IMAGE_MODEL in .env to a supported model."
+        )
     limit = daily_limit
     if limit is None:
         limit = int(os.getenv("IMAGE_GEN_DAILY_LIMIT", str(DEFAULT_DAILY_LIMIT)))
@@ -120,14 +136,14 @@ async def generate_image(
     if not ok:
         return f"Error: {err}"
     try:
-        client = AsyncOpenAI(api_key=XAI_API_KEY, base_url=XAI_BASE_URL, timeout=90.0)
-        # extra_body for xAI-specific params (aspect_ratio, resolution)
+        client = AsyncOpenAI(api_key=api_key, base_url=get_base_url(), timeout=90.0)
+        # xAI supports aspect_ratio via extra_body; other providers ignore this path.
         kwargs: dict[str, Any] = {
-            "model": IMAGE_GEN_MODEL,
+            "model": model,
             "prompt": prompt.strip(),
             "n": min(n, 4),
         }
-        if aspect_ratio and aspect_ratio != "auto":
+        if provider == "xai" and aspect_ratio and aspect_ratio != "auto":
             kwargs["extra_body"] = {"aspect_ratio": aspect_ratio}
         response = await client.images.generate(**kwargs)
         urls = []
@@ -170,7 +186,7 @@ async def generate_image(
                     "created_at": now_iso,
                     "prompt": prompt.strip(),
                     "aspect_ratio": aspect_ratio,
-                    "model": IMAGE_GEN_MODEL,
+                    "model": model,
                     "index": i + 1,
                     "path": str(out_path.resolve()),
                     "filename": out_path.name,
