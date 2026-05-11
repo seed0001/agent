@@ -114,6 +114,23 @@ async def run_cloud(
                 {"role": "user", "content": f"Problem: {problem}\nContext: {context or 'None'}\n\n{prompt}\n\nRespond in 2-4 sentences."},
             ],
         )
+        try:
+            from config.settings import get_llm_provider
+            from src.cost_tracking import record_openai_chat_usage
+
+            record_openai_chat_usage(
+                response=r,
+                provider=get_llm_provider(),
+                model=model,
+                source_type="subagent",
+                task_label="swarm_cloud_perspective",
+                fallback_prompt_text=f"Problem: {problem}\nContext: {context}\n{prompt}",
+                fallback_output_text=(r.choices[0].message.content or "").strip(),
+                metadata={"component": "swarm_graph", "phase": "perspective"},
+                user_id="default",
+            )
+        except Exception:
+            pass
         return (r.choices[0].message.content or "").strip()
 
     import asyncio
@@ -137,6 +154,23 @@ Synthesize into: 1) Summary 2) Step-by-step approach 3) Recommendations. Be dire
             {"role": "user", "content": synthesis_prompt},
         ],
     )
+    try:
+        from config.settings import get_llm_provider
+        from src.cost_tracking import record_openai_chat_usage
+
+        record_openai_chat_usage(
+            response=r,
+            provider=get_llm_provider(),
+            model=model,
+            source_type="subagent",
+            task_label="swarm_cloud_synthesis",
+            fallback_prompt_text=synthesis_prompt,
+            fallback_output_text=(r.choices[0].message.content or "").strip(),
+            metadata={"component": "swarm_graph", "phase": "synthesis"},
+            user_id="default",
+        )
+    except Exception:
+        pass
     text = (r.choices[0].message.content or "").strip()
     return Signal(type="response", content=text, strength=1.0, metadata={"source": "cloud_swarm"})
 

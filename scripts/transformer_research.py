@@ -1,7 +1,14 @@
 """
 Background research script: web search + compile findings.
 Run via spawn_subagent for transformer/model research.
-Output: data/research_output/transformer_research_latest.md
+
+Output contract:
+- Always writes a timestamped topic file: data/research_output/<topic_slug>_<timestamp>.md
+- Always writes a topic latest file:      data/research_output/<topic_slug>_latest.md
+- Always writes a universal latest file:  data/research_output/transformer_research_latest.md
+
+The universal latest file is intentional compatibility glue for callers/prompts that expect
+one stable research output path regardless of topic wording.
 """
 import asyncio
 import re
@@ -29,15 +36,15 @@ def _topic_slug(topic: str) -> str:
 
 
 async def run_research(topic: str = "transformer architectures for fine-tuning") -> str:
-    """Search web, compile findings, return report and output path."""
+    """Search web, compile findings, write report files, and return universal latest path."""
     sections = []
     sections.append(f"# Research: {topic}\n")
     sections.append(f"Generated: {datetime.now().isoformat()}\n")
 
     queries = [
         f"best {topic} 2024 2025",
-        f"Hugging Face transformer models for NLP fine-tuning",
-        f"base models for task prioritization user intent prediction",
+        "Hugging Face transformer models for NLP fine-tuning",
+        "base models for task prioritization user intent prediction",
     ]
 
     for q in queries:
@@ -53,18 +60,15 @@ async def run_research(topic: str = "transformer architectures for fine-tuning")
     RESEARCH_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     slug = _topic_slug(topic)
-    path = RESEARCH_OUTPUT_DIR / f"{slug}_{timestamp}.md"
-    latest = RESEARCH_OUTPUT_DIR / f"{slug}_latest.md"
 
-    path.write_text(report, encoding="utf-8")
-    latest.write_text(report, encoding="utf-8")
+    timestamped_path = RESEARCH_OUTPUT_DIR / f"{slug}_{timestamp}.md"
+    topic_latest_path = RESEARCH_OUTPUT_DIR / f"{slug}_latest.md"
+    universal_latest_path = RESEARCH_OUTPUT_DIR / "transformer_research_latest.md"
 
-    # Compatibility alias for older docs/prompts that still reference this path.
-    if "transformer" in (topic or "").lower():
-        legacy_latest = RESEARCH_OUTPUT_DIR / "transformer_research_latest.md"
-        legacy_latest.write_text(report, encoding="utf-8")
+    for output_path in (timestamped_path, topic_latest_path, universal_latest_path):
+        output_path.write_text(report, encoding="utf-8")
 
-    return str(latest)
+    return str(universal_latest_path)
 
 
 def main():

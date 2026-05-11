@@ -43,7 +43,29 @@ def _call_ollama(prompt: str, timeout: float = 20.0) -> str:
             timeout=timeout,
         )
         r.raise_for_status()
-        raw = (r.json().get("response") or "").strip()
+        payload = r.json()
+        raw = (payload.get("response") or "").strip()
+        try:
+            from src.cost_tracking import record_local_usage
+
+            in_toks = int(payload.get("prompt_eval_count") or 0)
+            out_toks = int(payload.get("eval_count") or 0)
+            total = int(payload.get("total_tokens") or (in_toks + out_toks))
+            record_local_usage(
+                provider="ollama",
+                model=OLLAMA_MODEL,
+                source_type="background",
+                prompt_tokens=in_toks,
+                completion_tokens=out_toks,
+                total_tokens=total,
+                actual_usage=(in_toks + out_toks) > 0,
+                estimated_usage=(in_toks + out_toks) == 0,
+                task_label="intuition_layer",
+                metadata={"component": "intuition_layer"},
+                user_id="default",
+            )
+        except Exception:
+            pass
         # Take only the first sentence in case the model rambles
         for sep in (".", "!", "?"):
             idx = raw.find(sep)

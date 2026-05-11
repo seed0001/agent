@@ -9,7 +9,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from config.settings import DISCORD_OWNER_ID, get_api_key, get_base_url, get_chat_model, get_llm_provider
+from config.settings import DISCORD_OWNER_ID
 from src.agent.biology import DriveState
 from src.agent.dag import DAGOrchestrator
 from src.agent.doctor_mode import DoctorMode, FailureEvent, FailureKind
@@ -1173,9 +1173,14 @@ class AssistiveAgent:
     """Main agent: LLM provider + memory + Doctor Mode."""
 
     def __init__(self, user_id: str = "default"):
-        self.provider = get_llm_provider()
-        self.client = AsyncOpenAI(api_key=get_api_key(), base_url=get_base_url())
-        self.model = get_chat_model()
+        from src import backend_switching
+
+        backend_switching.bootstrap_backend_files(user_id=user_id)
+        backend_switching.ensure_life_support_valid_or_raise(user_id=user_id)
+        self.backend_id = ""
+        self.provider = ""
+        self.model = ""
+        self.client = AsyncOpenAI(api_key="", base_url="https://api.openai.com/v1")
         self.memory = MemoryStore(user_id=user_id)
         self.biology = DriveState(self.memory.user_dir)
         from src.existential_layer import ExistentialState
@@ -1186,6 +1191,21 @@ class AssistiveAgent:
         self._dynamic_runners: dict = {}
         self._escalation_count = 0
         self._reload_dynamic()
+        self._sync_backend_from_state(force=True)
+
+    def _sync_backend_from_state(self, *, force: bool = False) -> None:
+        """Synchronize active client/model from persisted backend selection."""
+        from src import backend_switching
+
+        active = backend_switching.get_active_backend(
+            user_id=getattr(self.memory, "user_id", "default")
+        )
+        if not force and getattr(self, "backend_id", "") == active.id:
+            return
+        self.backend_id = active.id
+        self.provider = active.provider
+        self.model = active.model
+        self.client = AsyncOpenAI(api_key=active.api_key, base_url=active.base_url)
 
     def _reload_dynamic(self):
         _, self._dynamic_runners = load_dynamic_tools()
@@ -1234,6 +1254,10 @@ class AssistiveAgent:
         name = _normalize_tool_name(name)
         log_tool_start(name, {k: v for k, v in args.items() if k != "content"})
         tier = self._get_current_speaker_tier()
+        if name == "switch_backend_provider" and tier != "creator":
+            result = "Only the Creator can switch backend providers."
+            self._remember_tool_result(name, result)
+            return result
         if not is_tool_allowed(tier, name):
             if name in {"send_discord_message", "send_discord_attachment", "post_to_channel"}:
                 result = "Error: Discord send is unavailable for this conversation context."
@@ -1768,7 +1792,15 @@ class AssistiveAgent:
             runner = self._dynamic_runners[name]
             result = await runner(**{k: v for k, v in args.items() if v is not None})
         else:
-            result = f"Unknown tool: {name}"
+            # Hot-reload dynamic tools once before giving up. This restores
+            # live-session tool creation: a tool written to src/tools/dynamic/
+            # can be used immediately on the next attempted call.
+            self._reload_dynamic()
+            if name in self._dynamic_runners:
+                runner = self._dynamic_runners[name]
+                result = await runner(**{k: v for k, v in args.items() if v is not None})
+            else:
+                result = f"Unknown tool: {name}"
 
         if original_name != name:
             result = f"[Recovered tool name: {original_name} -> {name}]\n{result}"
@@ -2046,6 +2078,26 @@ class AssistiveAgent:
             ]),
         )
         context = self.memory.get_context_for_agent()
+        try:
+            from src.backend_switching import format_backend_context
+
+            backend_block = format_backend_context(
+                user_id=getattr(self.memory, "user_id", "default")
+            )
+            if backend_block:
+                context = (context or "") + "\n\n" + backend_block
+        except Exception:
+            pass
+        try:
+            from src.cost_tracking import format_snapshot_for_context
+
+            cost_block = format_snapshot_for_context(
+                user_id=getattr(self.memory, "user_id", "default")
+            )
+            if cost_block:
+                context = (context or "") + "\n\n" + cost_block
+        except Exception:
+            pass
         from src import background_completions
         bc_block = background_completions.get_context_block(user_id=getattr(self.memory, "user_id", "default"))
         if bc_block:
@@ -2107,8 +2159,12 @@ class AssistiveAgent:
                 "Training data: When the user wants training data, instruction pairs, or fine-tuning data generated locally (no cloud cost), use spawn_subagent('training data', 'scripts/generate_training_data.py', [topic, '--count', N]). Add '--soul' for soul/identity batches (output: data/soul_training/). Requires Ollama running. Check subagent_status; when completed, get_subagent_output(agent_id) or read_file. "
                 "You have: file read/write, run_command, get_system_info, search_web (real-time info), generate_image (Grok Imagine for art, illustrations, data viz—check get_image_usage first for budget), run_build (web/Python), "
                 "spawn_subagent, run_soul_training_step (YOUR soul training—prepare, generate, review, train), subagent_status, get_subagent_output, acknowledge_background_completion, create_task_dag / get_next_dag_step / complete_dag_step (multi-step work), "
-                "and set_working_memory for active task state. "
+                "set_working_memory for active task state, backend tools: switch_backend_provider and get_backend_status, "
+                "and cost tools: get_cost_snapshot, set_model_pricing, estimate_cost, set_budget_limits. "
                 "Use DAGs for complex multi-step tasks. Use Doctor Mode when a tool fails. After 3 failures, Cursor CLI escalates. When unsure how to do something, use search_knowledge or read_knowledge first, then act. "
+                "Cost awareness: check get_cost_snapshot before expensive operations. If estimated spend is > $1 or above configured confirmation threshold, ask before proceeding. Prefer local/free routes when quality allows. "
+                "Backend switching policy: only switch when the Creator asks. Use switch_backend_provider for explicit requests like 'switch to Grok' or 'go local'. "
+                "If requested backend fails health checks, report the exact reason and the tool-capable fallback that was selected. "
                 "Never say you can't do something without first checking the knowledge base. If the user gives a direction and you're unsure, call search_knowledge or list_knowledge_topics + read_knowledge to see what you can do. Only decline after you've checked. "
                 "You can analyze the codebase, suggest new tools (add_suggested_tools), and implement approved tools by writing Python to src/tools/dynamic/. When the user says to implement approved tools or when context shows pending implementations, do it: write the code, then mark_tool_implemented. "
                 "When the user shares personal information (name, location, job, hobbies, preferences, background, family, goals, likes, dislikes), use update_profile to store it. Build a rich, lasting profile over time. Store one clear fact per call. "
@@ -2134,6 +2190,7 @@ class AssistiveAgent:
         if bio or ex:
             system_prompt += f"\n\n## Internal state (drives)\n{bio}\n{ex}"
 
+        self._sync_backend_from_state()
         self.messages = _sanitize_message_history(self.messages)
         messages_for_api = [{"role": "system", "content": system_prompt}] + self.messages
 
@@ -2174,6 +2231,31 @@ class AssistiveAgent:
         choice = response.choices[0]
         msg = choice.message
         content = msg.content or ""
+        try:
+            from src.cost_tracking import record_openai_chat_usage
+
+            prompt_preview = ""
+            try:
+                prompt_preview = json.dumps(messages_for_api, ensure_ascii=False)[:16000]
+            except Exception:
+                prompt_preview = str(messages_for_api)[:16000]
+            record_openai_chat_usage(
+                response=response,
+                provider=getattr(self, "provider", ""),
+                model=self.model,
+                source_type="conversation",
+                session_id=getattr(self.memory, "session_id", ""),
+                user_id_for_event=str(_current_speaker_discord_id.get() or ""),
+                fallback_prompt_text=prompt_preview,
+                fallback_output_text=content,
+                metadata={
+                    "tool_round": getattr(self, "_tool_round", 0),
+                    "continue_only": bool(continue_only),
+                },
+                user_id=getattr(self.memory, "user_id", "default"),
+            )
+        except Exception:
+            pass
 
         if msg.tool_calls:
             # OpenAI-compatible APIs require tool-role messages to be preceded

@@ -103,9 +103,10 @@ def _build_consolidator_llm():
     """
     from openai import AsyncOpenAI
 
-    from config.settings import get_api_key, get_base_url, get_chat_model
+    from config.settings import get_api_key, get_base_url, get_chat_model, get_llm_provider
 
     client = AsyncOpenAI(api_key=get_api_key(), base_url=get_base_url())
+    provider = get_llm_provider()
     model = get_chat_model()
 
     async def _call(system: str, user: str) -> str:
@@ -115,8 +116,22 @@ def _build_consolidator_llm():
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            temperature=0.2,
         )
+        try:
+            from src.cost_tracking import record_openai_chat_usage
+
+            record_openai_chat_usage(
+                response=resp,
+                provider=provider,
+                model=model,
+                source_type="background",
+                task_label="memory_consolidator",
+                fallback_prompt_text=f"{system}\n\n{user}",
+                fallback_output_text=(resp.choices[0].message.content or "").strip(),
+                user_id="default",
+            )
+        except Exception:
+            pass
         return (resp.choices[0].message.content or "").strip()
 
     return _call
@@ -610,6 +625,126 @@ async def api_set_settings(tts_voice: str = Form(None)):
     if tts_voice:
         set_setting("tts_voice", tts_voice)
     return {"ok": True}
+
+
+@app.get("/api/cost/snapshot")
+async def api_cost_snapshot(
+    period: str = "today",
+    include_free: int = 1,
+    group_by: str = "provider",
+):
+    """Live API/token cost snapshot."""
+    from src.cost_tracking import get_cost_snapshot
+
+    return get_cost_snapshot(
+        period=period,
+        include_free=bool(int(include_free)),
+        group_by=group_by,
+        user_id="default",
+    )
+
+
+@app.get("/api/cost/events")
+async def api_cost_events(limit: int = 100):
+    """Recent usage/cost events."""
+    from src.cost_tracking import get_recent_events
+
+    return {"events": get_recent_events(limit=limit, user_id="default")}
+
+
+@app.post("/api/cost/pricing")
+async def api_set_cost_pricing(
+    provider: str = Form(...),
+    model: str = Form(...),
+    input_per_million: float = Form(None),
+    output_per_million: float = Form(None),
+    input_per_token: float = Form(None),
+    output_per_token: float = Form(None),
+    cached_input_per_million: float = Form(None),
+    reasoning_per_million: float = Form(None),
+    local: int = Form(0),
+    currency: str = Form("USD"),
+    notes: str = Form(""),
+):
+    """Create/update model pricing."""
+    from src.cost_tracking import set_model_pricing
+
+    msg = set_model_pricing(
+        provider=provider,
+        model=model,
+        input_per_million=input_per_million,
+        output_per_million=output_per_million,
+        input_per_token=input_per_token,
+        output_per_token=output_per_token,
+        cached_input_per_million=cached_input_per_million,
+        reasoning_per_million=reasoning_per_million,
+        local=bool(int(local)),
+        currency=currency,
+        notes=notes,
+        user_id="default",
+    )
+    return {"ok": not msg.lower().startswith("error"), "message": msg}
+
+
+@app.post("/api/cost/budget")
+async def api_set_cost_budget(
+    daily_limit: float = Form(None),
+    weekly_limit: float = Form(None),
+    monthly_limit: float = Form(None),
+    warning_threshold_percent: float = Form(None),
+    hard_stop_threshold_percent: float = Form(None),
+    require_confirmation_over_amount: float = Form(None),
+    currency: str = Form(None),
+):
+    """Update cost budget/threshold settings."""
+    from src.cost_tracking import set_budget_limits, get_budget_settings
+
+    msg = set_budget_limits(
+        daily_limit=daily_limit,
+        weekly_limit=weekly_limit,
+        monthly_limit=monthly_limit,
+        warning_threshold_percent=warning_threshold_percent,
+        hard_stop_threshold_percent=hard_stop_threshold_percent,
+        require_confirmation_over_amount=require_confirmation_over_amount,
+        currency=currency,
+        user_id="default",
+    )
+    return {"ok": True, "message": msg, "budget": get_budget_settings(user_id="default")}
+
+
+@app.get("/api/backend/status")
+async def api_backend_status():
+    """Current backend/fallback status."""
+    from src.backend_switching import get_backend_status
+
+    try:
+        return get_backend_status(user_id="default")
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/backend/switch")
+async def api_backend_switch(
+    target: str = Form(...),
+    reason: str = Form("creator_requested"),
+    dry_run: int = Form(0),
+    force: int = Form(0),
+):
+    """Creator-initiated backend switch with health-check fallback."""
+    from src.backend_switching import switch_backend_provider
+
+    try:
+        result = await switch_backend_provider(
+            target=target,
+            reason=reason,
+            dry_run=bool(int(dry_run)),
+            force=bool(int(force)),
+            requested_by="creator",
+            user_id="default",
+        )
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.post("/api/speak")

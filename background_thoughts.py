@@ -259,6 +259,23 @@ async def _generate(client: AsyncOpenAI, model: str, system: str, user: str) -> 
             {"role": "user", "content": user},
         ],
     )
+    try:
+        from config.settings import get_llm_provider
+        from src.cost_tracking import record_openai_chat_usage
+
+        record_openai_chat_usage(
+            response=response,
+            provider=get_llm_provider(),
+            model=model,
+            source_type="background",
+            task_label="background_thoughts",
+            fallback_prompt_text=f"{system}\n\n{user}",
+            fallback_output_text=(response.choices[0].message.content or "").strip(),
+            metadata={"component": "background_thoughts"},
+            user_id="default",
+        )
+    except Exception:
+        pass
     return (response.choices[0].message.content or "").strip()
 
 

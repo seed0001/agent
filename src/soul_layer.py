@@ -28,7 +28,29 @@ def _call_ollama(prompt: str, timeout: float = 30.0) -> str:
             timeout=timeout,
         )
         r.raise_for_status()
-        return (r.json().get("response") or "").strip()
+        payload = r.json()
+        try:
+            from src.cost_tracking import record_local_usage
+
+            in_toks = int(payload.get("prompt_eval_count") or 0)
+            out_toks = int(payload.get("eval_count") or 0)
+            total = int(payload.get("total_tokens") or (in_toks + out_toks))
+            record_local_usage(
+                provider="ollama",
+                model=OLLAMA_MODEL,
+                source_type="background",
+                prompt_tokens=in_toks,
+                completion_tokens=out_toks,
+                total_tokens=total,
+                actual_usage=(in_toks + out_toks) > 0,
+                estimated_usage=(in_toks + out_toks) == 0,
+                task_label="soul_layer",
+                metadata={"component": "soul_layer"},
+                user_id="default",
+            )
+        except Exception:
+            pass
+        return (payload.get("response") or "").strip()
     except Exception:
         return ""
 

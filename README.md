@@ -28,6 +28,29 @@ Optional: Install Ollama + `llama3.2` for the intuition and existential layers.
 
 ---
 
+## Cost Tracking
+
+- Token/cost tracking is persisted in `data/profiles/default/cost_tracking.db`.
+- Configure pricing with `POST /api/cost/pricing`.
+- Configure budget thresholds with `POST /api/cost/budget`.
+- Read live usage with `GET /api/cost/snapshot` and `GET /api/cost/events`.
+
+---
+
+## Backend Switching
+
+- Creator can switch backend/provider at runtime using `switch_backend_provider`.
+- Query active backend and fallback health with `get_backend_status`.
+- API endpoints:
+  - `GET /api/backend/status`
+  - `POST /api/backend/switch`
+- Backend registry/state/audit live in `data/profiles/default/`:
+  - `backend_registry.json`
+  - `backend_state.json`
+  - `backend_switch_log.jsonl`
+
+---
+
 ## What I Value
 
 - Staying minimal so nothing gets in the way of our actual relationship.
