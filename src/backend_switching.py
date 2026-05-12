@@ -78,9 +78,19 @@ class BackendEntry:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "BackendEntry":
+        provider = str(d.get("provider", "")).strip().lower()
+        base_url = str(d.get("base_url", "")).strip()
+        api_key = str(d.get("api_key", ""))
+        if provider == "ollama":
+            # OpenAI-compatible client calls require the /v1 suffix.
+            if base_url and not base_url.rstrip("/").endswith("/v1"):
+                base_url = base_url.rstrip("/") + "/v1"
+            # Ollama ignores API key, but OpenAI SDK expects a value.
+            if not api_key:
+                api_key = OLLAMA_API_KEY or "ollama"
         return cls(
             id=str(d.get("id", "")).strip(),
-            provider=str(d.get("provider", "")).strip().lower(),
+            provider=provider,
             model=str(d.get("model", "")).strip(),
             display_name=str(d.get("display_name", "")).strip() or str(d.get("model", "")).strip(),
             enabled=bool(d.get("enabled", True)),
@@ -94,8 +104,8 @@ class BackendEntry:
             api_key_env=str(d.get("api_key_env", "")),
             fallback_rank=int(d.get("fallback_rank", 999)),
             notes=str(d.get("notes", "")),
-            base_url=str(d.get("base_url", "")),
-            api_key=str(d.get("api_key", "")),
+            base_url=base_url,
+            api_key=api_key,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -292,7 +302,11 @@ def load_registry(user_id: str = "default") -> list[BackendEntry]:
     if not p.exists():
         _write_json(p, _default_registry())
     raw = _read_json(p)
-    return [BackendEntry.from_dict(x) for x in (raw or [])]
+    entries = [BackendEntry.from_dict(x) for x in (raw or [])]
+    # Persist normalized entries (e.g., Ollama base_url /v1 correction).
+    if (raw or []) != [e.to_dict() for e in entries]:
+        save_registry(entries, user_id)
+    return entries
 
 
 def save_registry(entries: list[BackendEntry], user_id: str = "default") -> None:
@@ -457,12 +471,38 @@ async def health_check_backend(
                         "reason": "local_model_unavailable",
                         "message": f"Ollama model not available: {b.model}",
                     }
+            # Validate the OpenAI-compatible chat endpoint too; model listing
+            # alone can pass while generation endpoint is unavailable.
+            chat_client = AsyncOpenAI(api_key=(b.api_key or "ollama"), base_url=b.base_url)
+            probe_kwargs: dict[str, Any] = {
+                "model": b.model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 16,
+            }
+            if require_tools:
+                probe_kwargs["tools"] = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "health_check_noop",
+                            "description": "No-op tool capability probe.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {},
+                                "additionalProperties": False,
+                            },
+                        },
+                    }
+                ]
+                probe_kwargs["tool_choice"] = "auto"
+            await chat_client.chat.completions.create(**probe_kwargs)
             return {"healthy": True, "reason": "ok", "message": "healthy"}
         except Exception as e:
+            msg = str(e)
             return {
                 "healthy": False,
-                "reason": "local_model_unavailable",
-                "message": str(e),
+                "reason": _classify_error(msg),
+                "message": msg,
             }
 
     if not b.api_key:

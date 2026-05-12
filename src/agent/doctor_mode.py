@@ -43,9 +43,9 @@ class DoctorMode:
     def diagnose(self, error: Exception | str) -> FailureKind:
         """Classify the failure type. Accepts Exception or raw error string (e.g. from tool results)."""
         msg = (error if isinstance(error, str) else str(error)).lower()
-        if "error:" in msg or "tool" in msg:
-            return FailureKind.TOOL_ERROR
         if "api" in msg or "401" in msg or "403" in msg:
+            return FailureKind.API_ERROR
+        if "429" in msg or "insufficient_quota" in msg or "quota" in msg or "credit" in msg:
             return FailureKind.API_ERROR
         if "connection" in msg or "refused" in msg or "network" in msg:
             return FailureKind.CONNECTION
@@ -55,6 +55,8 @@ class DoctorMode:
             return FailureKind.NOT_FOUND
         if "timeout" in msg or "timed out" in msg:
             return FailureKind.TIMEOUT
+        if "error:" in msg or "tool" in msg:
+            return FailureKind.TOOL_ERROR
         return FailureKind.UNKNOWN
 
     def generate_strategies(self, failure: FailureEvent) -> list[str]:
@@ -98,4 +100,11 @@ class DoctorMode:
         """Message for the user."""
         if in_progress:
             return "Error. Retrying."
+        m = (failure.message or "").lower()
+        if "insufficient_quota" in m or "quota" in m or "credit" in m:
+            return "Provider quota/credits are exhausted. Switch backend or add billing credits."
+        if "api key" in m or "unauthorized" in m or "401" in m or "403" in m:
+            return "Provider authentication failed. Check API key and permissions."
+        if "connection" in m or "network" in m or "refused" in m:
+            return "Provider connection failed. Check network/provider status or switch backend."
         return "Couldn't fix it. Check connection or try again."

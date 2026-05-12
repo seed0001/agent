@@ -719,6 +719,11 @@ def get_cost_snapshot(
     if start is not None:
         where = "WHERE timestamp >= ?"
         params.append(_iso(start))
+    task_where = where
+    if task_where:
+        task_where += "\n          AND task_label IS NOT NULL\n          AND TRIM(task_label) != ''"
+    else:
+        task_where = "WHERE task_label IS NOT NULL\n          AND TRIM(task_label) != ''"
 
     sums = c.execute(
         f"""
@@ -771,9 +776,7 @@ def get_cost_snapshot(
                COALESCE(SUM(total_tokens), 0) AS total_tokens,
                COUNT(*) AS calls
         FROM usage_events
-        {where}
-          AND task_label IS NOT NULL
-          AND TRIM(task_label) != ''
+        {task_where}
         GROUP BY task_label
         ORDER BY total_cost DESC, total_tokens DESC
         LIMIT 20

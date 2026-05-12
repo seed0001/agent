@@ -4,7 +4,9 @@ discord_server_manager.py — Discord server management dynamic tool for Andrew.
 Consolidates the old one-off scripts from the previous agent folder into one
 inspectable tool surface. Uses a short-lived discord.py client for each action.
 
-Default guild is Good Vibes unless guild_id is provided.
+Guild-aware behavior:
+- list actions can enumerate all connected guilds when guild_id is omitted
+- mutating actions require an explicit guild_id when multiple guilds are visible
 Destructive actions require confirm=True.
 """
 from __future__ import annotations
@@ -12,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import Any, Optional
+
+import httpx
 
 try:
     import discord  # type: ignore
@@ -24,15 +28,13 @@ except Exception as e:  # pragma: no cover
     _IMPORT_OK = False
     _IMPORT_ERR = str(e)
 
-DEFAULT_GUILD_ID = 1469648303862841376  # Good Vibes
-
 TOOL_DEF = {
     "name": "manage_discord_server",
-    "description": (
-        "Manage Discord server structure for the Creator: list roles/members, "
+        "description": (
+            "Manage Discord server structure for the Creator: list guilds/roles/members, "
         "create/edit/delete channels and categories, create/edit/delete roles, "
         "assign/remove roles, set channel permissions, and kick members. "
-        "Destructive actions require confirm=true. Defaults to Good Vibes guild."
+            "Destructive actions require confirm=true."
     ),
     "parameters": {
         "type": "object",
@@ -40,6 +42,7 @@ TOOL_DEF = {
             "action": {
                 "type": "string",
                 "enum": [
+                    "list_guilds",
                     "list_roles", "list_members", "list_channels",
                     "create_channel", "edit_channel", "delete_channel",
                     "create_category", "delete_category",
@@ -49,7 +52,7 @@ TOOL_DEF = {
                 ],
                 "description": "Discord management action to perform.",
             },
-            "guild_id": {"type": "string", "description": "Discord guild/server ID. Defaults to Good Vibes."},
+            "guild_id": {"type": "string", "description": "Discord guild/server ID. Optional for list actions."},
             "channel_id": {"type": "string", "description": "Target channel ID."},
             "channel_name": {"type": "string", "description": "Channel name for create/edit/find."},
             "channel_type": {"type": "string", "enum": ["text", "voice"], "description": "Channel type for create_channel. Default text."},
@@ -112,6 +115,63 @@ def _apply_perm_list(overwrite: Any, value: Optional[str], state: bool) -> None:
         overwrite.speak = state
 
 
+async def _rest_list_guilds() -> list[dict[str, Any]]:
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        return []
+    headers = {"Authorization": f"Bot {token}"}
+    out: list[dict[str, Any]] = []
+    before = ""
+    async with httpx.AsyncClient(timeout=10.0) as hc:
+        while True:
+            url = "https://discord.com/api/v10/users/@me/guilds?limit=200"
+            if before:
+                url += f"&before={before}"
+            resp = await hc.get(url, headers=headers)
+            if resp.status_code != 200:
+                break
+            batch = resp.json()
+            if not isinstance(batch, list) or not batch:
+                break
+            for g in batch:
+                if isinstance(g, dict):
+                    out.append(g)
+            if len(batch) < 200:
+                break
+            before = str(batch[-1].get("id", "")).strip()
+            if not before:
+                break
+    return out
+
+
+async def _rest_list_channels_for_guild(guild_id: str) -> list[dict[str, Any]]:
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        return []
+    headers = {"Authorization": f"Bot {token}"}
+    async with httpx.AsyncClient(timeout=10.0) as hc:
+        resp = await hc.get(f"https://discord.com/api/v10/guilds/{guild_id}/channels", headers=headers)
+        if resp.status_code != 200:
+            return []
+        payload = resp.json()
+        if not isinstance(payload, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for ch in payload:
+            if not isinstance(ch, dict):
+                continue
+            out.append(
+                {
+                    "id": str(ch.get("id", "")),
+                    "name": str(ch.get("name", "")),
+                    "type": str(ch.get("type", "unknown")),
+                    "position": int(ch.get("position", 0) or 0),
+                    "category_id": str(ch.get("parent_id", "") or ""),
+                }
+            )
+        return sorted(out, key=lambda r: (r["position"], r["id"]))
+
+
 def _find_channel(guild: Any, channel_id: Optional[int], name: Optional[str], target: Optional[str] = None) -> Any:
     if channel_id:
         return guild.get_channel(channel_id)
@@ -163,7 +223,7 @@ async def _run_discord_action(**kwargs: Any) -> str:
         return "Discord manager error: DISCORD_BOT_TOKEN is not set."
 
     action = kwargs.get("action")
-    guild_id = _as_int(kwargs.get("guild_id") or DEFAULT_GUILD_ID, "guild_id", True)
+    guild_id = _as_int(kwargs.get("guild_id"), "guild_id", False)
     confirm = bool(kwargs.get("confirm", False))
 
     destructive = {"delete_channel", "delete_category", "delete_role", "kick_member"}
@@ -185,10 +245,130 @@ async def _run_discord_action(**kwargs: Any) -> str:
     @client.event
     async def on_ready():  # type: ignore
         try:
-            guild = client.get_guild(guild_id)
-            if not guild:
-                await finish(f"Guild not found: {guild_id}")
+            guilds_by_id: dict[int, Any] = {int(g.id): g for g in client.guilds}
+            # Refresh visibility from API in case cache is stale.
+            try:
+                async for g in client.fetch_guilds(limit=None):
+                    if int(g.id) not in guilds_by_id:
+                        guilds_by_id[int(g.id)] = g
+            except Exception:
+                pass
+
+            if action == "list_guilds":
+                rest_guilds = await _rest_list_guilds()
+                for g in rest_guilds:
+                    gid = int(str(g.get("id", "0")) or "0")
+                    if gid and gid not in guilds_by_id:
+                        guilds_by_id[gid] = g
+                if not guilds_by_id:
+                    await finish("No connected guilds found.")
+                    return
+                lines = ["Connected guilds:"]
+                for gid in sorted(guilds_by_id.keys()):
+                    g = guilds_by_id[gid]
+                    full = client.get_guild(gid)
+                    channel_count = len(full.channels) if full else "unknown"
+                    member_count = getattr(full, "member_count", None) if full else None
+                    gname = getattr(g, "name", None)
+                    if gname is None and isinstance(g, dict):
+                        gname = str(g.get("name", f"Guild {gid}"))
+                    member_text = member_count if member_count is not None else "unknown"
+                    lines.append(
+                        f"- {gname or f'Guild {gid}'} id={gid} channels={channel_count} members={member_text}"
+                    )
+                await finish("\n".join(lines))
                 return
+
+            guild = None
+            if guild_id:
+                guild = client.get_guild(guild_id)
+                if not guild:
+                    try:
+                        guild = await client.fetch_guild(guild_id)
+                    except Exception:
+                        guild = None
+                if not guild:
+                    await finish(f"Guild not found: {guild_id}")
+                    return
+            else:
+                list_actions = {"list_channels", "list_roles", "list_members"}
+                if action in list_actions:
+                    if not guilds_by_id:
+                        rest_guilds = await _rest_list_guilds()
+                        for g in rest_guilds:
+                            gid = int(str(g.get("id", "0")) or "0")
+                            if gid and gid not in guilds_by_id:
+                                guilds_by_id[gid] = g
+                    if not guilds_by_id:
+                        await finish("No connected guilds found.")
+                        return
+                    visible_guilds = []
+                    for gid in sorted(guilds_by_id.keys()):
+                        g_obj = client.get_guild(gid)
+                        if g_obj:
+                            visible_guilds.append(g_obj)
+                    if action == "list_channels":
+                        lines = []
+                        for gid in sorted(guilds_by_id.keys()):
+                            g_obj = client.get_guild(gid)
+                            gname = getattr(g_obj, "name", None)
+                            if gname is None:
+                                meta = guilds_by_id.get(gid)
+                                if isinstance(meta, dict):
+                                    gname = str(meta.get("name", f"Guild {gid}"))
+                                else:
+                                    gname = f"Guild {gid}"
+                            lines.append(f"Channels in {gname} ({gid}):")
+                            rest_channels = await _rest_list_channels_for_guild(str(gid))
+                            if rest_channels:
+                                names_by_id = {c["id"]: c["name"] for c in rest_channels}
+                                for ch in rest_channels:
+                                    parent = ""
+                                    parent_id = ch.get("category_id")
+                                    if parent_id:
+                                        parent_name = names_by_id.get(parent_id, "")
+                                        if parent_name:
+                                            parent = f" | category={parent_name}"
+                                    lines.append(f"- {ch['name']} ({ch['type']}) id={ch['id']}{parent}")
+                                continue
+                            if g_obj:
+                                for ch in sorted(g_obj.channels, key=lambda c: (getattr(c, "position", 0), c.name)):
+                                    kind = ch.__class__.__name__.replace("Channel", "").lower()
+                                    parent = f" | category={ch.category.name}" if getattr(ch, "category", None) else ""
+                                    lines.append(f"- {ch.name} ({kind}) id={ch.id}{parent}")
+                        await finish("\n".join(lines))
+                        return
+                    if action == "list_roles":
+                        lines = []
+                        for g in visible_guilds:
+                            lines.append(f"Roles in {g.name} ({g.id}):")
+                            for role in sorted(g.roles, key=lambda r: r.position, reverse=True):
+                                lines.append(f"- {role.name} id={role.id} pos={role.position} managed={role.managed}")
+                        await finish("\n".join(lines))
+                        return
+                    if action == "list_members":
+                        lines = []
+                        for g in visible_guilds:
+                            lines.append(f"Members in {g.name} ({g.id}):")
+                            for m in g.members:
+                                roles = [r.name for r in m.roles if not r.is_default()]
+                                lines.append(f"- {m.display_name} ({m}) id={m.id} roles={roles}")
+                        if len(lines) > 500:
+                            lines = lines[:500] + [f"... truncated at 500 lines across {len(visible_guilds)} guild(s)"]
+                        await finish("\n".join(lines))
+                        return
+                # For mutating actions, avoid silently targeting an arbitrary guild.
+                cached_guilds = [g for g in client.guilds]
+                if len(cached_guilds) == 1:
+                    guild = cached_guilds[0]
+                elif len(cached_guilds) == 0:
+                    await finish("No connected guilds found. Use action=list_guilds to inspect visibility.")
+                    return
+                else:
+                    await finish(
+                        "Multiple guilds detected. Provide guild_id for this action, or run action=list_guilds first."
+                    )
+                    return
 
             if action == "list_channels":
                 lines = [f"Channels in {guild.name} ({guild.id}):"]

@@ -9,6 +9,8 @@ import io
 import json
 from pathlib import Path
 
+import httpx
+
 from config.settings import DISCORD_OWNER_ID, DISCORD_BOT_TOKEN
 
 DISCORD_MAX_LEN = 1900  # leave buffer under 2000
@@ -395,29 +397,117 @@ async def list_connected_channels(guild_id: str | None = None) -> str:
     if not client.is_ready():
         return "Error: Discord client is not ready yet."
 
-    rows: list[dict] = []
     guild_filter = str(guild_id or "").strip()
-    for guild in client.guilds:
-        if guild_filter and str(guild.id) != guild_filter:
-            continue
-        channels: list[dict] = []
-        for ch in sorted(guild.channels, key=lambda c: (getattr(c, "position", 0), str(c.id))):
-            channels.append(
+
+    async def _rest_snapshot() -> list[dict]:
+        if not DISCORD_BOT_TOKEN:
+            return []
+        headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+        rest_guilds: list[dict] = []
+        before = ""
+        async with httpx.AsyncClient(timeout=10.0) as hc:
+            while True:
+                url = "https://discord.com/api/v10/users/@me/guilds?limit=200"
+                if before:
+                    url += f"&before={before}"
+                resp = await hc.get(url, headers=headers)
+                if resp.status_code != 200:
+                    break
+                batch = resp.json()
+                if not isinstance(batch, list) or not batch:
+                    break
+                for g in batch:
+                    if isinstance(g, dict):
+                        rest_guilds.append(g)
+                if len(batch) < 200:
+                    break
+                before = str(batch[-1].get("id", "")).strip()
+                if not before:
+                    break
+
+            rows: list[dict] = []
+            for g in rest_guilds:
+                gid = str(g.get("id", "")).strip()
+                if not gid:
+                    continue
+                if guild_filter and gid != guild_filter:
+                    continue
+                channels_resp = await hc.get(
+                    f"https://discord.com/api/v10/guilds/{gid}/channels",
+                    headers=headers,
+                )
+                channels: list[dict] = []
+                if channels_resp.status_code == 200:
+                    payload = channels_resp.json()
+                    if isinstance(payload, list):
+                        parsed = []
+                        for ch in payload:
+                            if not isinstance(ch, dict):
+                                continue
+                            parsed.append(
+                                {
+                                    "id": str(ch.get("id", "")),
+                                    "name": str(ch.get("name", "")),
+                                    "type": str(ch.get("type", "unknown")),
+                                    "position": int(ch.get("position", 0) or 0),
+                                }
+                            )
+                        channels = sorted(parsed, key=lambda c: (c["position"], c["id"]))
+                rows.append(
+                    {
+                        "guild_id": gid,
+                        "guild_name": str(g.get("name", f"Guild {gid}")),
+                        "channel_count": len(channels),
+                        "channels": channels,
+                    }
+                )
+            return rows
+
+    # REST-first to avoid stale websocket cache hiding guilds.
+    rows = await _rest_snapshot()
+    if not rows:
+        # Fallback to in-memory cache if REST fails.
+        guild_map: dict[str, object] = {str(g.id): g for g in client.guilds}
+        try:
+            async for g in client.fetch_guilds(limit=None):
+                if str(g.id) not in guild_map:
+                    guild_map[str(g.id)] = g
+        except Exception:
+            pass
+        rows = []
+        for gid in sorted(guild_map.keys()):
+            guild = client.get_guild(int(gid))
+            if guild_filter and gid != guild_filter:
+                continue
+            if guild is None:
+                partial = guild_map[gid]
+                rows.append(
+                    {
+                        "guild_id": gid,
+                        "guild_name": getattr(partial, "name", f"Guild {gid}"),
+                        "channel_count": 0,
+                        "channels": [],
+                    }
+                )
+                continue
+            channels: list[dict] = []
+            for ch in sorted(guild.channels, key=lambda c: (getattr(c, "position", 0), str(c.id))):
+                channels.append(
+                    {
+                        "id": str(ch.id),
+                        "name": getattr(ch, "name", str(ch)),
+                        "type": str(getattr(ch, "type", "unknown")),
+                        "position": int(getattr(ch, "position", 0)),
+                    }
+                )
+            rows.append(
                 {
-                    "id": str(ch.id),
-                    "name": getattr(ch, "name", str(ch)),
-                    "type": str(getattr(ch, "type", "unknown")),
-                    "position": int(getattr(ch, "position", 0)),
+                    "guild_id": str(guild.id),
+                    "guild_name": guild.name,
+                    "channel_count": len(channels),
+                    "channels": channels,
                 }
             )
-        rows.append(
-            {
-                "guild_id": str(guild.id),
-                "guild_name": guild.name,
-                "channel_count": len(channels),
-                "channels": channels,
-            }
-        )
 
     if guild_filter and not rows:
         return f"No connected guild matched guild_id={guild_filter}."
