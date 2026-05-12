@@ -151,6 +151,66 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_audit_recent ON memory_audit(created_at DESC)",
         ],
     ),
+    (
+        2,
+        [
+            # --- task threads ---------------------------------------------
+            # Explicit conversational/work threads with status. First-class
+            # memory layer so the agent can answer "what's open?" without
+            # rummaging through episodic prose.
+            """
+            CREATE TABLE IF NOT EXISTS task_threads (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL CHECK (status IN ('open','blocked','done','abandoned')) DEFAULT 'open',
+                owner TEXT,                              -- 'user' | 'andrew' | 'shared'
+                related_artifacts TEXT NOT NULL DEFAULT '[]',  -- json array of paths/ids
+                tags TEXT NOT NULL DEFAULT '[]',         -- json array
+                session_id TEXT,                         -- session that opened it
+                last_touched_at TEXT NOT NULL DEFAULT (datetime('now')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                closed_at TEXT,
+                deleted_at TEXT,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_threads_status ON task_threads(status, last_touched_at DESC) WHERE deleted_at IS NULL",
+            "CREATE INDEX IF NOT EXISTS idx_threads_recent ON task_threads(last_touched_at DESC) WHERE deleted_at IS NULL",
+            # --- continuity ledger ----------------------------------------
+            # Rolling document — identity, projects, open threads,
+            # decisions, unresolved directives. Latest row is what gets
+            # pinned at the top of the system prompt.
+            """
+            CREATE TABLE IF NOT EXISTS continuity_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,                 -- rendered markdown
+                sections TEXT NOT NULL DEFAULT '{}',   -- json structured parts
+                version INTEGER NOT NULL DEFAULT 1,
+                built_by TEXT NOT NULL DEFAULT 'consolidator',  -- 'consolidator' | 'startup' | 'manual' | 'on_demand'
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_ledger_recent ON continuity_ledger(created_at DESC)",
+            # --- recall events --------------------------------------------
+            # Traceability for the deterministic recall router. When a user
+            # phrase triggered a deep recall, what we found, what we showed.
+            """
+            CREATE TABLE IF NOT EXISTS recall_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                query TEXT NOT NULL,
+                trigger_type TEXT NOT NULL,            -- 'phrase' | 'tool' | 'guard' | 'startup'
+                phrase_matched TEXT,
+                hit_count INTEGER NOT NULL DEFAULT 0,
+                sources TEXT NOT NULL DEFAULT '[]',    -- json array of source kinds
+                block_preview TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_recall_recent ON recall_events(created_at DESC)",
+        ],
+    ),
 ]
 
 

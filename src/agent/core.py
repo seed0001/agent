@@ -572,6 +572,53 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "manage_thread",
+            "description": (
+                "First-class memory of work-in-progress. Use to OPEN a new thread when you "
+                "and the user start a new piece of work, UPDATE its description / status as "
+                "things move, BLOCK it when something stops you, or CLOSE it when done. "
+                "Open / blocked threads are pinned at the top of every prompt — this is how "
+                "the user's question 'what were we doing?' becomes a SQL query instead of a "
+                "guess."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["open", "update", "close", "block", "list", "list_open", "search", "get"],
+                        "description": "What to do with threads.",
+                    },
+                    "title": {"type": "string", "description": "Short title (required for open; used to find thread for update/close if id not given)."},
+                    "id": {"type": "string", "description": "Thread id (preferred for update/close/get)."},
+                    "description": {"type": "string", "description": "Longer description / current state."},
+                    "owner": {"type": "string", "enum": ["user", "andrew", "shared"]},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "related_artifacts": {"type": "array", "items": {"type": "string"}, "description": "File paths or artifact ids tied to this thread."},
+                    "status": {"type": "string", "enum": ["open", "blocked", "done", "abandoned"]},
+                    "query": {"type": "string", "description": "For action=search."},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rebuild_continuity_ledger",
+            "description": (
+                "Force a rebuild of the continuity ledger right now. The ledger is "
+                "normally refreshed every consolidator tick, but call this after large "
+                "memory writes (closing many threads, importing a profile) when you want "
+                "the next turn's pinned briefing to be fresh."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "remember_schedule",
             "description": (
                 "Store or replace a durable schedule/task plan. Use this whenever Travis "
@@ -1190,6 +1237,12 @@ class AssistiveAgent:
         self.messages: list[dict[str, str]] = []
         self._dynamic_runners: dict = {}
         self._escalation_count = 0
+        # Continuity layer state: one-shot blocks consumed during prompt
+        # assembly; reset after each use.
+        self._pending_recall_block = ""
+        self._pending_guard_block = ""
+        self._amnesia_guard_retries = 0
+        self._continuity_brief_emitted = False
         self._reload_dynamic()
         self._sync_backend_from_state(force=True)
 
@@ -1475,6 +1528,10 @@ class AssistiveAgent:
                 args.get("category", "other"),
                 args.get("fact", ""),
             )
+        elif name == "manage_thread":
+            result = await asyncio.to_thread(self._tool_manage_thread, args)
+        elif name == "rebuild_continuity_ledger":
+            result = await asyncio.to_thread(self._tool_rebuild_ledger)
         elif name == "remember_schedule":
             from src.schedule_memory import format_schedule, remember_schedule
 
@@ -1835,6 +1892,115 @@ class AssistiveAgent:
             self._current_turn_tool_results: list[dict[str, str]] = []
         self._current_turn_tool_results.append({"name": name, "result": str(result)})
 
+    def _tool_manage_thread(self, args: dict[str, Any]) -> str:
+        """Implementation of the ``manage_thread`` tool call.
+
+        Open / update / close / list / search task threads. Threads are the
+        first-class memory layer for "what we're doing together"; they're
+        pinned at the top of every prompt as long as they're open or blocked.
+        """
+        action = (args.get("action") or "").strip().lower()
+        try:
+            if action == "open":
+                title = (args.get("title") or "").strip()
+                if not title:
+                    return "manage_thread(open): title is required."
+                t = self.memory.open_thread(
+                    title=title,
+                    description=args.get("description"),
+                    owner=args.get("owner") or "shared",
+                    tags=args.get("tags") or [],
+                    related_artifacts=args.get("related_artifacts") or [],
+                )
+                return f"Opened thread {t.id[:8]}…  '{t.title}' ({t.status})"
+            if action == "update":
+                tid = (args.get("id") or "").strip()
+                if not tid:
+                    title = (args.get("title") or "").strip()
+                    if not title:
+                        return "manage_thread(update): id or title is required."
+                    existing = self.memory.threads.find_by_title(title)
+                    if existing is None:
+                        return f"manage_thread(update): no thread matches title {title!r}."
+                    tid = existing.id
+                fields: dict[str, Any] = {}
+                for k in ("title", "description", "status", "owner"):
+                    if k in args and args[k] is not None:
+                        fields[k] = args[k]
+                if "tags" in args and args["tags"] is not None:
+                    fields["tags"] = list(args["tags"])
+                if "related_artifacts" in args and args["related_artifacts"] is not None:
+                    fields["related_artifacts"] = list(args["related_artifacts"])
+                updated = self.memory.update_thread(tid, **fields)
+                if updated is None:
+                    return f"manage_thread(update): no thread with id {tid}."
+                return f"Updated thread {updated.id[:8]}…  '{updated.title}' ({updated.status})"
+            if action in ("close", "block"):
+                tid = (args.get("id") or "").strip()
+                if not tid:
+                    title = (args.get("title") or "").strip()
+                    if not title:
+                        return f"manage_thread({action}): id or title is required."
+                    existing = self.memory.threads.find_by_title(title)
+                    if existing is None:
+                        return f"manage_thread({action}): no thread matches {title!r}."
+                    tid = existing.id
+                if action == "block":
+                    updated = self.memory.update_thread(tid, status="blocked")
+                    if updated is None:
+                        return f"manage_thread(block): no thread with id {tid}."
+                    return f"Marked thread {updated.id[:8]}… '{updated.title}' as blocked."
+                status = (args.get("status") or "done").strip()
+                ok = self.memory.close_thread(tid, status=status if status in ("done", "abandoned") else "done")
+                if not ok:
+                    return f"manage_thread(close): no open thread with id {tid}."
+                return f"Closed thread {tid[:8]}… as {status}."
+            if action in ("list", "list_open"):
+                limit = int(args.get("limit") or 25)
+                threads = (
+                    self.memory.list_open_threads(limit=limit)
+                    if action == "list_open"
+                    else self.memory.threads.list_recent(limit=limit)
+                )
+                if not threads:
+                    return "No threads."
+                from src.agent.task_threads import render_threads_for_prompt
+                return render_threads_for_prompt(threads, max_chars=4000)
+            if action == "search":
+                q = (args.get("query") or "").strip()
+                if not q:
+                    return "manage_thread(search): query is required."
+                threads = self.memory.threads.search(q, limit=int(args.get("limit") or 10))
+                if not threads:
+                    return f"No threads match {q!r}."
+                from src.agent.task_threads import render_threads_for_prompt
+                return render_threads_for_prompt(threads, max_chars=4000)
+            if action == "get":
+                tid = (args.get("id") or "").strip()
+                if not tid:
+                    return "manage_thread(get): id is required."
+                t = self.memory.threads.get(tid)
+                if t is None:
+                    return f"manage_thread(get): no thread with id {tid}."
+                from src.agent.task_threads import render_threads_for_prompt
+                return render_threads_for_prompt([t], max_chars=4000)
+            return f"manage_thread: unknown action {action!r}. Try open/update/close/block/list/list_open/search/get."
+        except ValueError as e:
+            return f"manage_thread: {e}"
+        except Exception as e:
+            log_error("manage_thread", e)
+            return f"manage_thread: error: {e}"
+
+    def _tool_rebuild_ledger(self) -> str:
+        try:
+            row = self.memory.rebuild_ledger(built_by="on_demand")
+        except Exception as e:
+            log_error("rebuild_continuity_ledger", e)
+            return f"rebuild_continuity_ledger: error: {e}"
+        if row is None:
+            return "rebuild_continuity_ledger: no salient items found — ledger unchanged."
+        return f"rebuild_continuity_ledger: ledger v{row.version} written ({len(row.content)} chars)."
+
     def _narrate_tool(self, q: asyncio.Queue | None, name: str, args: dict[str, Any]) -> None:
         """Emit contextual narration for a tool call — varies with tool and args."""
         p = args.get
@@ -2056,6 +2222,28 @@ class AssistiveAgent:
                 except Exception:
                     pass
                 self.messages.append({"role": "user", "content": user_input})
+                # Deterministic recall-intent router. If the user phrasing
+                # asks for recall ("recap", "do you remember", "yesterday"),
+                # we run a real retrieval pass and stash the rendered block
+                # for prompt assembly below. Bypasses the LLM's own judgment
+                # — the model gets evidence, not a question.
+                self._pending_recall_block = ""
+                try:
+                    recall_result = self.memory.route_recall_intent(user_input)
+                    if recall_result is not None and recall_result.block:
+                        self._pending_recall_block = recall_result.block
+                        try:
+                            import logging as _logging
+                            _logging.getLogger(__name__).info(
+                                "recall_router fired: trigger=%s hits=%d sources=%s",
+                                recall_result.intent.label,
+                                len(recall_result.hits),
+                                list(recall_result.sources_summary.keys()),
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 # Proactive episodic recall: run before prompt context assembly
                 # for creator and best_friend+ turns so restarts still feel
                 # continuous.
@@ -2168,6 +2356,7 @@ class AssistiveAgent:
                 "Never say you can't do something without first checking the knowledge base. If the user gives a direction and you're unsure, call search_knowledge or list_knowledge_topics + read_knowledge to see what you can do. Only decline after you've checked. "
                 "You can analyze the codebase, suggest new tools (add_suggested_tools), and implement approved tools by writing Python to src/tools/dynamic/. When the user says to implement approved tools or when context shows pending implementations, do it: write the code, then mark_tool_implemented. "
                 "When the user shares personal information (name, location, job, hobbies, preferences, background, family, goals, likes, dislikes), use update_profile to store it. Build a rich, lasting profile over time. Store one clear fact per call. "
+                "Continuity threads: when you and the user start a real piece of work (a project, an investigation, a directive that takes more than one turn), call manage_thread(action='open', title='...', description='...'). Update or close it as work progresses. Open / blocked threads are pinned at the top of every prompt — they make 'what were we doing yesterday?' a real lookup, not a guess. Use manage_thread(action='list_open') if you need to recheck what's active. After large memory changes, optionally rebuild_continuity_ledger to refresh the pinned briefing. "
                 "Schedules and routines: when Travis creates or changes a daily schedule, checklist, morning routine, medication plan, project plan, or recurring task list, call remember_schedule so it survives restart. Use get_schedule/list_schedules before saying you don't know his schedule. "
                 "Saved files: successful write_file calls are tracked as artifacts. Use list_artifacts/get_artifact to find files you saved. Use search_memory before saying you don't remember something; it searches schedules, saved artifacts, contacts, profile facts, and transcripts. "
                 "For contacts (Discord users, friends): use update_contact to store their name, location, interests, email. Each contact has a tier: stranger, friend, good_friend, best_friend, creator. Only the Creator can change tiers via update_contact(tier=...). Lower tiers have restricted tool access; Creator has full access. When someone asks for something outside their tier, say so. "
@@ -2189,6 +2378,64 @@ class AssistiveAgent:
         ex = self.existential.get_summary()
         if bio or ex:
             system_prompt += f"\n\n## Internal state (drives)\n{bio}\n{ex}"
+
+        # === Continuity layer ===
+        # Pin the continuity ledger to the TOP of the system prompt — above
+        # identity, above conversation context. This is the agent's running
+        # self-briefing: who it's with, what's open, what's been decided.
+        # Architectural fix #1 (the durable ledger).
+        try:
+            ledger_block = self.memory.get_continuity_block(max_chars=4000)
+        except Exception:
+            ledger_block = ""
+        # Recall router output for this turn (only set when a recall phrase
+        # fired). Architectural fix #3 (deterministic recall-intent router).
+        recall_block = getattr(self, "_pending_recall_block", "") or ""
+        # Architectural fix #6: hard-guard reinforcement injected when a
+        # prior turn was caught claiming amnesia. We surface it once.
+        guard_block = getattr(self, "_pending_guard_block", "") or ""
+        # Architectural fix #5: surface the startup continuity brief once
+        # per process so the first turn after boot logs / shows it.
+        if not getattr(self, "_continuity_brief_emitted", False):
+            try:
+                brief = (
+                    self.memory.state.get("continuity_brief") or {}
+                ).get("brief", "")
+                if brief:
+                    import logging as _logging
+                    _logging.getLogger(__name__).info(
+                        "startup continuity brief: %d chars (session=%s)",
+                        len(brief), self.memory.session_id[:8],
+                    )
+            except Exception:
+                pass
+            self._continuity_brief_emitted = True
+
+        prefix_blocks: list[str] = []
+        if ledger_block:
+            prefix_blocks.append(ledger_block)
+        if recall_block:
+            prefix_blocks.append(recall_block)
+        if guard_block:
+            prefix_blocks.append(guard_block)
+        if prefix_blocks:
+            system_prompt = "\n\n".join(prefix_blocks) + "\n\n---\n\n" + system_prompt
+
+        # Hard guard rule: the agent must NEVER claim amnesia without first
+        # consulting the recall router. This sentence is the contract; the
+        # post-response guard enforces it.
+        system_prompt += (
+            "\n\n## Memory contract\n"
+            "You have a durable memory layered above this prompt: a continuity "
+            "ledger, open task threads, profile facts, and a recall router. "
+            "Never tell the user you don't remember, you don't recall, or "
+            "that something is the first time — without first calling "
+            "search_memory or referencing the continuity ledger / open threads "
+            "above. If a recall block is pinned this turn, speak from it."
+        )
+        # Clear the one-shot blocks now that they're consumed.
+        self._pending_recall_block = ""
+        self._pending_guard_block = ""
 
         self._sync_backend_from_state()
         self.messages = _sanitize_message_history(self.messages)
@@ -2212,7 +2459,7 @@ class AssistiveAgent:
                 )
                 break
             except Exception as e:
-                log_error("grok_api", e)
+                log_error(f"llm_api:{getattr(self, 'provider', 'unknown')}/{getattr(self, 'model', 'unknown')}", e)
                 attempts += 1
                 self._narrate(narrate_queue, f"Retry {attempts}/{max_attempts}")
                 failure = FailureEvent(
@@ -2419,6 +2666,63 @@ class AssistiveAgent:
             content,
             getattr(self, "_current_turn_tool_results", []),
         )
+
+        # Hard guard against amnesic replies (architectural fix #6). If the
+        # model wrote "I don't remember" / "first time" / similar, force a
+        # deep recall and retry ONCE. We cap retries per turn to avoid
+        # infinite loops on truly empty memory.
+        try:
+            from src.agent.recall_router import detect_amnesia
+        except Exception:
+            detect_amnesia = lambda _c: False  # type: ignore[assignment]
+        guard_retries = getattr(self, "_amnesia_guard_retries", 0)
+        if (
+            not continue_only
+            and detect_amnesia(content)
+            and guard_retries < 1
+            and not force_final
+        ):
+            self._amnesia_guard_retries = guard_retries + 1
+            try:
+                last_user = next(
+                    (m["content"] for m in reversed(self.messages) if m.get("role") == "user"),
+                    user_input,
+                )
+                forced = self.memory.force_recall(last_user)
+                if forced is not None and (forced.block or "").strip():
+                    self._pending_guard_block = (
+                        forced.block
+                        + "\n\n_(Reminder: you DO have memory. The block above was "
+                        "produced deterministically from your durable stores. "
+                        "Speak from it. Do not claim amnesia again this turn.)_"
+                    )
+                else:
+                    self._pending_guard_block = (
+                        "## Continuity recall (forced)\n"
+                        "The recall router was invoked because you tried to "
+                        "claim amnesia. No prior context surfaced. If the "
+                        "underlying stores are truly empty, say so honestly "
+                        "AND tell the user you ran the recall — do not just "
+                        "say 'I don't remember.'"
+                    )
+                # Drop the amnesic assistant message before the retry so it
+                # does not pollute the next prompt.
+                self._narrate(narrate_queue, "Catching myself — running forced recall.")
+                try:
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "amnesia guard fired: hits=%d reply_preview=%r",
+                        len(forced.hits) if forced is not None else 0,
+                        content[:200],
+                    )
+                except Exception:
+                    pass
+                return await self.chat(continue_only=True, narrate_queue=narrate_queue)
+            except Exception:
+                pass
+        # Reset for next turn
+        self._amnesia_guard_retries = 0
+
         s = soul.load_soul()
         agent_name = (s.get("agent_name") or "").strip() if s else ""
         label = f"{agent_name}: " if agent_name else "Reply: "

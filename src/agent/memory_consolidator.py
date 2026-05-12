@@ -78,11 +78,20 @@ class EmbedStats:
 
 
 @dataclass
+class LedgerStats:
+    rebuilt: bool = False
+    version: int = 0
+    sections: int = 0
+    error: str = ""
+
+
+@dataclass
 class TickStats:
     decay: DecayStats = field(default_factory=DecayStats)
     consolidate: ConsolidateStats = field(default_factory=ConsolidateStats)
     importance: ImportanceStats = field(default_factory=ImportanceStats)
     embed: EmbedStats = field(default_factory=EmbedStats)
+    ledger: LedgerStats = field(default_factory=LedgerStats)
     started_at: datetime = field(default_factory=_utcnow)
     finished_at: datetime | None = None
 
@@ -333,6 +342,7 @@ class MemoryConsolidator:
         self.episodic = EpisodicStore(user_id)
         self.state = WorkingState(user_id)
         self._semantic = None  # lazy
+        self._ledger_memory = None  # lazy: avoid circular import on construct
 
     # ---- decay ----
 
@@ -514,6 +524,48 @@ class MemoryConsolidator:
         stats.embedded = len(result)
         return stats
 
+    # ---- ledger ----
+
+    def ledger_pass(self) -> LedgerStats:
+        """Rebuild the continuity ledger from current memory state.
+
+        Uses a *separate* MemoryStore-like surface — we lazy-import the
+        facade to avoid an import cycle (the facade itself instantiates the
+        consolidator's stores). Cheap deterministic build; no LLM required.
+        """
+        stats = LedgerStats()
+        try:
+            from src.agent.continuity_ledger import ContinuityLedger, LedgerBuilder
+            from src.agent.memory import MemoryStore
+            if self._ledger_memory is None:
+                # We construct a separate facade pinned to this profile.
+                # NOTE: this creates its own session row, so don't keep it
+                # — pull what we need and discard.
+                pass
+            # Build directly off our existing stores to avoid spinning up
+            # another session row each tick. We synthesize the duck-typed
+            # surface the LedgerBuilder needs.
+            class _Surface:
+                pass
+            surface = _Surface()
+            surface.profile = self.profile  # type: ignore[attr-defined]
+            surface.episodic = self.episodic  # type: ignore[attr-defined]
+            from src.agent.task_threads import TaskThreadStore
+            surface.threads = TaskThreadStore(self.user_id)  # type: ignore[attr-defined]
+            from src.agent.memory_stores import SessionStore
+            surface.sessions = SessionStore(self.user_id)  # type: ignore[attr-defined]
+            surface.session_id = ""  # consolidator isn't tied to a session
+            ledger = ContinuityLedger(self.user_id)
+            row = LedgerBuilder(surface).build_and_persist(ledger, built_by="consolidator")
+            if row is not None:
+                stats.rebuilt = True
+                stats.version = row.version
+                stats.sections = len(row.sections or {})
+        except Exception as e:
+            stats.error = str(e)[:200]
+            logger.warning("ledger_pass failed: %s", e)
+        return stats
+
     # ---- single tick + loop ----
 
     async def tick(self) -> TickStats:
@@ -534,6 +586,10 @@ class MemoryConsolidator:
             stats.embed = self.embed_pass()
         except Exception as e:
             logger.exception("embed_pass failed: %s", e)
+        try:
+            stats.ledger = self.ledger_pass()
+        except Exception as e:
+            logger.exception("ledger_pass failed: %s", e)
         stats.finished_at = _utcnow()
         return stats
 
@@ -550,9 +606,10 @@ class MemoryConsolidator:
             try:
                 stats = await self.tick()
                 logger.info(
-                    "consolidator tick: decay=%s consolidate=%s",
+                    "consolidator tick: decay=%s consolidate=%s ledger=%s",
                     stats.decay.__dict__,
                     stats.consolidate.__dict__,
+                    stats.ledger.__dict__,
                 )
             except asyncio.CancelledError:
                 raise

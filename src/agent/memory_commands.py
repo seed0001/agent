@@ -80,6 +80,12 @@ def handle(text: str, memory: MemoryStore) -> str | None:
             return _cmd_thoughts(rest, memory)
         if cmd == "sessions":
             return _cmd_sessions(rest, memory)
+        if cmd in ("threads", "thread"):
+            return _cmd_threads(rest, memory)
+        if cmd == "ledger":
+            return _cmd_ledger(rest, memory)
+        if cmd == "recall":
+            return _cmd_recall(rest, memory)
         if cmd in ("help", "?"):
             return _help()
     except Exception as e:
@@ -274,6 +280,76 @@ def _cmd_thoughts(rest: str, memory: MemoryStore) -> str:
     return "\n".join(lines)
 
 
+def _cmd_threads(rest: str, memory: MemoryStore) -> str:
+    """`/threads`         show open threads
+    `/threads all [N]`   show recent threads (any status)
+    `/threads <query>`   substring search across title/desc/tags"""
+    from src.agent.task_threads import render_threads_for_prompt
+
+    rest = (rest or "").strip()
+    if not rest:
+        threads = memory.list_open_threads(limit=25)
+        if not threads:
+            return "no open threads."
+        counts = memory.threads.counts()
+        header = (
+            f"## Threads — {counts.get('open', 0)} open, "
+            f"{counts.get('blocked', 0)} blocked, "
+            f"{counts.get('done', 0)} done, "
+            f"{counts.get('abandoned', 0)} abandoned"
+        )
+        return header + "\n\n" + render_threads_for_prompt(threads, max_chars=4000)
+    parts = rest.split(maxsplit=1)
+    sub = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    if sub == "all":
+        n = _safe_int(arg, default=25, min_v=1, max_v=200)
+        threads = memory.threads.list_recent(limit=n)
+    else:
+        threads = memory.threads.search(rest, limit=25)
+    if not threads:
+        return "no matching threads."
+    return render_threads_for_prompt(threads, max_chars=4000)
+
+
+def _cmd_ledger(rest: str, memory: MemoryStore) -> str:
+    """`/ledger`         show pinned continuity ledger
+    `/ledger rebuild`   force a rebuild now
+    `/ledger history N` show last N ledger versions"""
+    rest = (rest or "").strip().lower()
+    if rest in ("rebuild", "refresh"):
+        row = memory.rebuild_ledger(built_by="manual")
+        if row is None:
+            return "ledger rebuild: nothing salient to pin yet."
+        return f"ledger rebuilt — v{row.version}, {len(row.content)} chars."
+    if rest.startswith("history"):
+        parts = rest.split(maxsplit=1)
+        n = _safe_int(parts[1] if len(parts) > 1 else "", default=5, min_v=1, max_v=30)
+        rows = memory.ledger.history(limit=n)
+        if not rows:
+            return "no ledger history yet."
+        out = [f"## Ledger history — last {len(rows)}"]
+        for r in rows:
+            preview = (r.content or "").splitlines()[0][:120]
+            out.append(f"- v{r.version} [{r.created_at.isoformat(timespec='minutes')}] by {r.built_by}: {preview}")
+        return "\n".join(out)
+    block = memory.get_continuity_block(max_chars=8000)
+    if not block:
+        return "no continuity ledger yet — run `/ledger rebuild`."
+    return block
+
+
+def _cmd_recall(rest: str, memory: MemoryStore) -> str:
+    """`/recall <query>`  run the deterministic recall router with this query"""
+    q = (rest or "").strip()
+    if not q:
+        return "usage: /recall <query>  (e.g. /recall what were we doing yesterday)"
+    result = memory.force_recall(q)
+    if result is None:
+        return "recall router unavailable."
+    return result.block or "no continuity hits."
+
+
 def _cmd_sessions(rest: str, memory: MemoryStore) -> str:
     n = _safe_int(rest, default=10, min_v=1, max_v=200)
     rows = memory.sessions.list_recent(limit=n)
@@ -346,6 +422,13 @@ _HELP = re.sub(r"^ {4}", "", """
       /unprotect <key-or-substring>    let it decay naturally again
       /thoughts [N]                    show last N background thoughts (default 8)
       /sessions [N]                    show last N sessions (default 10)
+      /threads                         show open task threads
+      /threads all [N]                 show last N threads (any status)
+      /threads <query>                 substring search across threads
+      /ledger                          show pinned continuity ledger
+      /ledger rebuild                  force a rebuild now
+      /ledger history [N]              show last N ledger versions
+      /recall <query>                  run the deterministic recall router
       /memory help                     show this list
 """, flags=re.MULTILINE).strip()
 

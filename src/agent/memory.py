@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from config.settings import USER_PROFILES_DIR
+from src.agent.continuity_ledger import ContinuityLedger, LedgerBuilder
 from src.agent.memory_stores import (
     ContextWindow,
     EpisodicEntry,
@@ -38,6 +39,7 @@ from src.agent.memory_stores import (
     WorkingState,
     _utcnow,
 )
+from src.agent.task_threads import TaskThreadStore, render_threads_for_prompt
 
 PROFILE_CATEGORIES = ("background", "work", "preferences", "personal", "other")
 _STOP_TERMS = {
@@ -140,6 +142,8 @@ class MemoryStore:
         self.profile = ProfileStore(user_id)
         self.thoughts = ThoughtStore(user_id)
         self.state = WorkingState(user_id)
+        self.threads = TaskThreadStore(user_id)
+        self.ledger = ContinuityLedger(user_id)
         self._semantic = None  # lazy: built on first context render
 
         # New per-process session. Tagged onto every short_term/episodic write
@@ -152,6 +156,14 @@ class MemoryStore:
         # Warm-load recent episodic context so restarts don't feel amnesic.
         try:
             self.load_recent_episodic_context(hours_back=72, limit=5)
+        except Exception:
+            pass
+        # Startup reconciliation: ensure a continuity ledger exists so the
+        # very first turn after boot has identity + threads + decisions
+        # pinned. Cheap deterministic build — the consolidator will refresh
+        # it on its own cadence after that.
+        try:
+            self.startup_reconcile_ledger()
         except Exception:
             pass
 
@@ -350,16 +362,59 @@ class MemoryStore:
     def clear_immediate(self) -> None:
         self.immediate.clear()
 
+    # Cheap lexical importance boost at write time. The consolidator's
+    # LLM pass will refine these later, but we want decision/directive
+    # turns to surface BEFORE that pass runs (the LLM pass has a 5+ min
+    # cooldown). Without this, every fresh row sits at 0.5 and gets
+    # treated as average noise during the next prompt assembly.
+    _DECISION_BOOST_PATTERNS = [
+        re.compile(p, re.IGNORECASE)
+        for p in [
+            r"\b(remember|never forget|always)\b",
+            r"\bdecid(ed|ing)?\b",
+            r"\b(switching|switch to|going with|standardiz)\b",
+            r"\b(do not|don'?t) (do|use|run|switch|build)\b",
+            r"\b(must|need to|will) (build|fix|add|implement|ship|push)\b",
+            r"\b(architectural|architecture)\b",
+            r"\b(do it|fucking wire|wire it up|hook it up)\b",
+            r"\b(my name is|i am|i'm a|i live|my (job|wife|kid|partner|dog|cat))\b",
+        ]
+    ]
+
+    def _initial_importance(self, content: str, role: str) -> float:
+        body = (content or "").strip()
+        if ":" in body[:32]:
+            body = body.split(":", 1)[1].strip()
+        if len(body) < 6:
+            return 0.2
+        if role == "user":
+            for pat in self._DECISION_BOOST_PATTERNS:
+                if pat.search(body):
+                    return 0.78
+        elif role == "assistant":
+            for pat in self._DECISION_BOOST_PATTERNS:
+                if pat.search(body):
+                    return 0.72
+        return 0.5
+
     def add_short_term(self, content: str, **metadata: Any) -> None:
-        """Record a turn in the current session. Persists to SQLite immediately."""
+        """Record a turn in the current session. Persists to SQLite immediately.
+
+        Initial importance is set heuristically — decision/identity turns
+        start at ~0.75 so they survive the cross-session selector before
+        the consolidator's LLM importance pass can rate them properly.
+        """
         if _is_blank_user_input(content):
             return
+        role = _infer_role(content)
+        importance = self._initial_importance(content, role)
         self.sessions.touch(self.session_id)
         self.episodic.insert(
             session_id=self.session_id,
-            role=_infer_role(content),
+            role=role,
             content=content,
             source=metadata.get("source", "agent"),
+            importance=importance,
             metadata=metadata or None,
         )
 
@@ -406,6 +461,34 @@ class MemoryStore:
 
     # -- prompt assembly ----------------------------------------------
 
+    @staticmethod
+    def _is_low_signal_turn(entry: EpisodicEntry) -> bool:
+        """Episodic hygiene filter — keep tool spam and trivial acks out of
+        the prompt-injected context. They remain queryable in the DB."""
+        if entry.role in ("tool", "system"):
+            return True
+        text = (entry.content or "").strip()
+        if not text:
+            return True
+        body = text
+        # Strip "User: " / "Andrew: " prefixes for length judgment.
+        if ":" in body[:32]:
+            body = body.split(":", 1)[1].strip()
+        if len(body) < 6:
+            return True
+        low = body.lower()
+        # Pure status / acknowledgement lines — agent-internal narration that
+        # bloats the prompt without adding meaning.
+        bland = {
+            "ok", "okay", "k", "kk", "thanks", "thank you", "thx", "ty",
+            "got it", "noted", "sure", "yes", "no", "yep", "yeah", "nope",
+            "done", "fine", "good", "working...", "running...", "continuing.",
+            "wrapping up.", "retry", "error.",
+        }
+        if low.rstrip(".!? ") in bland:
+            return True
+        return False
+
     def get_context_for_agent(self, max_immediate: int = 5, max_short: int = 20) -> str:
         """Build the memory context block injected into the agent's system prompt.
 
@@ -413,6 +496,10 @@ class MemoryStore:
         ``ProfileStore.reinforce(key)`` — the lifecycle's reinforcement signal.
         Facts that are actively used stay healthy; facts ignored for weeks
         eventually decay below the floor and get pruned.
+
+        Episodic hygiene: tool / system / blank / sub-6-character ack rows
+        are filtered from the *prompt* blocks. They remain in the DB and
+        remain reachable through the explicit recall router.
         """
         parts: list[str] = []
 
@@ -423,10 +510,11 @@ class MemoryStore:
                 parts.append(f"- {e.content}")
 
         recent_turns = self.episodic.get_recent_in_session(self.session_id, limit=max_short)
-        recent_ids = {r.id for r in recent_turns}
-        if recent_turns:
+        recent_clean = [r for r in recent_turns if not self._is_low_signal_turn(r)]
+        recent_ids = {r.id for r in recent_clean}
+        if recent_clean:
             parts.append("\n## Recent conversation")
-            for r in recent_turns:
+            for r in recent_clean:
                 ts = r.created_at.isoformat(timespec="seconds")
                 parts.append(f"- [{ts}] {r.content}")
 
@@ -437,23 +525,40 @@ class MemoryStore:
         important = self.episodic.get_top_importance_in_session(
             self.session_id, limit=8, exclude_ids=recent_ids
         )
+        important = [r for r in important if not self._is_low_signal_turn(r)]
         if important:
             parts.append("\n## Important earlier in this session")
             for r in important:
                 ts = r.created_at.isoformat(timespec="seconds")
                 parts.append(f"- [{ts}] (importance {r.importance:.2f}) {r.content}")
 
-        # Cross-session continuity: a few turns from prior sessions so Andrew
-        # remembers what we talked about yesterday.
-        cross = self.episodic.get_recent_across_sessions(
-            limit=10, within_days=7, exclude_session=self.session_id
+        # Cross-session continuity: prefer high-importance turns over the
+        # bare-most-recent so a long noisy yesterday doesn't push out a
+        # decision-bearing turn from two days ago.
+        cross_pool = self.episodic.get_recent_across_sessions(
+            limit=80, within_days=7, exclude_session=self.session_id
         )
+        cross_pool = [r for r in cross_pool if not self._is_low_signal_turn(r)]
+        cross_pool.sort(key=lambda r: (r.importance, r.created_at), reverse=True)
+        cross = cross_pool[:10]
+        cross.sort(key=lambda r: r.created_at)
         cross_ids = {r.id for r in cross}
         if cross:
             parts.append("\n## Earlier sessions (recent)")
             for r in cross:
                 ts = r.created_at.isoformat(timespec="seconds")
-                parts.append(f"- [{ts}] {r.content}")
+                parts.append(f"- [{ts}] (importance {r.importance:.2f}) {r.content}")
+
+        # Open / blocked task threads — first-class continuity layer.
+        try:
+            open_threads = self.threads.list_open(limit=8)
+        except Exception:
+            open_threads = []
+        if open_threads:
+            block = render_threads_for_prompt(open_threads, max_chars=1600)
+            if block:
+                parts.append("\n## Open threads (active work)")
+                parts.append(block)
 
         # Retrieval-augmented memory: semantically similar prior turns to the
         # most recent user message. Falls back silently if embeddings aren't
@@ -526,6 +631,127 @@ class MemoryStore:
         for f in facts:
             out.setdefault(f.category, []).append(f)
         return out
+
+    # -- continuity ledger (always pinned) ----------------------------
+
+    def get_continuity_block(self, *, max_chars: int = 4000) -> str:
+        """The continuity ledger rendered for prompt injection.
+
+        This is the thing that goes at the TOP of the system prompt — above
+        identity, above conversation context. It exists so the agent always
+        opens the turn knowing who it's with, what's open, and what was
+        decided.
+        """
+        try:
+            return self.ledger.get_pinned_block(max_chars=max_chars)
+        except Exception:
+            return ""
+
+    def rebuild_ledger(self, *, built_by: str = "on_demand"):
+        """Rebuild the continuity ledger from current memory state.
+
+        Returns the new ``LedgerRow`` or ``None`` if nothing salient was
+        found (rare; usually only on a brand-new profile).
+        """
+        builder = LedgerBuilder(self)
+        return builder.build_and_persist(self.ledger, built_by=built_by)
+
+    def startup_reconcile_ledger(self) -> str:
+        """Boot-time consolidation: ensure a ledger exists and emit a
+        continuity brief into working state.
+
+        Returns the brief (string), which the agent layer can also log so
+        a missed reconciliation is visible (per architectural fix #5).
+        """
+        latest = self.ledger.get_latest()
+        # Always rebuild on startup — cheap, deterministic. Falling back to
+        # the prior ledger if the new build returns None.
+        try:
+            row = self.rebuild_ledger(built_by="startup")
+        except Exception:
+            row = None
+        if row is None:
+            row = latest
+        brief = row.content.strip() if row and row.content else ""
+        # Persist a short brief into working state so the dashboard / logs
+        # have something to surface.
+        try:
+            stats: dict[str, Any] = {}
+            try:
+                stats = {
+                    "episodic_rows": self.episodic.count(),
+                    "open_threads": self.threads.counts().get("open", 0),
+                    "blocked_threads": self.threads.counts().get("blocked", 0),
+                    "session_id": self.session_id,
+                    "ledger_version": (row.version if row else 0),
+                    "ts": _utcnow().isoformat(timespec="seconds"),
+                }
+            except Exception:
+                pass
+            self.state.set("continuity_brief", {
+                "brief": brief[:4000],
+                "stats": stats,
+            })
+        except Exception:
+            pass
+        return brief
+
+    # -- recall router (deterministic, intent-driven) ----------------
+
+    def route_recall_intent(self, user_text: str):
+        """Returns a ``RecallResult`` if a recall phrase fired, else ``None``.
+
+        The agent core wires this into the user-message pipeline. When it
+        returns a result, prepend ``result.block`` to the system prompt for
+        the current turn.
+        """
+        try:
+            from src.agent.recall_router import route_user_message
+            return route_user_message(self, user_text)
+        except Exception:
+            return None
+
+    def force_recall(self, user_text: str):
+        """Used by the hard guard. Always runs in wide mode."""
+        try:
+            from src.agent.recall_router import force_recall_for_guard
+            return force_recall_for_guard(self, user_text)
+        except Exception:
+            return None
+
+    # -- task threads --------------------------------------------------
+
+    def open_thread(
+        self,
+        title: str,
+        *,
+        description: str | None = None,
+        owner: str | None = "shared",
+        tags: list[str] | None = None,
+        related_artifacts: list[str] | None = None,
+    ):
+        """Open (or touch the existing) thread by title."""
+        existing = self.threads.find_by_title(title)
+        if existing is not None:
+            self.threads.touch(existing.id)
+            return existing
+        return self.threads.open(
+            title=title,
+            description=description,
+            owner=owner,
+            tags=tags or [],
+            related_artifacts=related_artifacts or [],
+            session_id=self.session_id,
+        )
+
+    def close_thread(self, thread_id: str, status: str = "done") -> bool:
+        return self.threads.close(thread_id, status=status)
+
+    def update_thread(self, thread_id: str, **fields):
+        return self.threads.update(thread_id, **fields)
+
+    def list_open_threads(self, limit: int = 25):
+        return self.threads.list_open(limit=limit)
 
     # -- views (web UI) ------------------------------------------------
 

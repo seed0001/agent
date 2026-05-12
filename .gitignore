@@ -15,6 +15,7 @@ project_folder/
 
 # Vendored third-party code with its own .git history
 vendor/
+repos/
 
 # Local-only smoke / scratch scripts
 _smoke_*.py
