@@ -98,4 +98,10 @@ class DoctorMode:
         """Message for the user."""
         if in_progress:
             return "Error. Retrying."
-        return "Couldn't fix it. Check connection or try again."
+        backend = str(failure.context.get("backend") or "").strip()
+        detail = failure.message.strip()
+        if len(detail) > 220:
+            detail = detail[:217] + "..."
+        if backend:
+            return f"Couldn't reach backend {backend}. Last error: {detail}"
+        return f"Couldn't complete the request. Last error: {detail or failure.kind.value}"

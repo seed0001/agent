@@ -6,24 +6,17 @@ Local mode (Ollama) stays unchanged.
 """
 from src.swarm.signal import Signal
 
-from config.settings import (
-    get_api_key,
-    get_api_key_env_name,
-    get_base_url,
-    get_chat_model,
-)
-
 
 def _provider_llm():
-    """LLM for configured OpenAI-compatible provider."""
+    """LLM for the active OpenAI-compatible backend."""
     from crewai import LLM
-    model = get_chat_model()
-    base_url = get_base_url()
-    api_key = get_api_key()
+    from src import backend_switching
+
+    active = backend_switching.get_active_backend(user_id="default")
     return LLM(
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
+        model=active.model,
+        base_url=active.base_url,
+        api_key=active.api_key,
         temperature=0.5,
     )
 
@@ -46,13 +39,15 @@ async def run_crew_cloud(problem: str, context: str, prompt_prefix: str = "") ->
             metadata={"source": "crew_swarm"},
         )
 
-    api_key = get_api_key()
-    if not api_key:
+    from src import backend_switching
+
+    active = backend_switching.get_active_backend(user_id="default")
+    if not active.api_key:
         return Signal(
             type="response",
             content=(
-                "[Crew swarm] API key not set for cloud swarm. "
-                f"Set {get_api_key_env_name()} in .env."
+                f"[Crew swarm] API key not set for active backend {active.id}. "
+                f"Set {active.api_key_env} in .env."
             ),
             strength=1.0,
             metadata={"source": "crew_swarm"},

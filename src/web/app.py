@@ -96,22 +96,20 @@ async def _background_thoughts_loop():
 
 
 def _build_consolidator_llm():
-    """Return an async (system, user) -> str function backed by the configured LLM provider.
+    """Return an async (system, user) -> str function backed by the active backend.
 
-    The consolidator is decoupled from any specific provider — we inject this
-    closure so unit tests can stub it out without touching HTTP.
+    The consolidator follows backend_state.json on each call, so background
+    memory work cannot keep using an old .env provider after Andrew switches.
     """
     from openai import AsyncOpenAI
 
-    from config.settings import get_api_key, get_base_url, get_chat_model, get_llm_provider
-
-    client = AsyncOpenAI(api_key=get_api_key(), base_url=get_base_url())
-    provider = get_llm_provider()
-    model = get_chat_model()
-
     async def _call(system: str, user: str) -> str:
+        from src import backend_switching
+
+        active = backend_switching.get_active_backend(user_id="default")
+        client = AsyncOpenAI(api_key=active.api_key, base_url=active.base_url)
         resp = await client.chat.completions.create(
-            model=model,
+            model=active.model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -122,8 +120,8 @@ def _build_consolidator_llm():
 
             record_openai_chat_usage(
                 response=resp,
-                provider=provider,
-                model=model,
+                provider=active.provider,
+                model=active.model,
                 source_type="background",
                 task_label="memory_consolidator",
                 fallback_prompt_text=f"{system}\n\n{user}",

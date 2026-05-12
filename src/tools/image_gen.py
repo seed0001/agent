@@ -13,17 +13,25 @@ from typing import Any
 from config.settings import (
     DATA_DIR,
     IMAGE_OUTPUT_DIR,
-    get_api_key,
-    get_api_key_env_name,
-    get_base_url,
-    get_image_model,
-    get_llm_provider,
+    MISTRAL_IMAGE_MODEL,
+    OPENAI_IMAGE_MODEL,
+    XAI_IMAGE_MODEL,
 )
 from openai import AsyncOpenAI
 
 USAGE_PATH = DATA_DIR / "image_usage.json"
 METADATA_PATH = DATA_DIR / "generated_images.jsonl"
 DEFAULT_DAILY_LIMIT = 20  # configurable via env
+
+
+def _image_model_for_provider(provider: str) -> str:
+    if provider == "openai":
+        return OPENAI_IMAGE_MODEL
+    if provider == "mistral":
+        return MISTRAL_IMAGE_MODEL
+    if provider == "xai":
+        return XAI_IMAGE_MODEL
+    return ""
 
 
 def _load_usage() -> dict[str, Any]:
@@ -118,16 +126,17 @@ async def generate_image(
     Returns URL(s) or saves to file. Tracks usage for budget.
     """
     import os
-    provider = get_llm_provider()
-    api_key = get_api_key()
-    if not api_key:
-        key_name = get_api_key_env_name()
-        return f"Error: {key_name} not set. Configure in .env for image generation."
-    model = get_image_model()
+    from src import backend_switching
+
+    active = backend_switching.get_active_backend(user_id="default")
+    if not active.api_key:
+        return f"Error: {active.api_key_env} not set. Configure in .env for image generation."
+    model = _image_model_for_provider(active.provider)
     if not model:
         return (
-            "Error: image generation model is not configured for this provider. "
-            "Set MISTRAL_IMAGE_MODEL in .env to a supported model."
+            f"Error: image generation model is not configured for active backend {active.id}. "
+            f"No fallback was attempted. Configure the image model for provider '{active.provider}' "
+            "or switch to an image-capable backend."
         )
     limit = daily_limit
     if limit is None:
@@ -136,14 +145,14 @@ async def generate_image(
     if not ok:
         return f"Error: {err}"
     try:
-        client = AsyncOpenAI(api_key=api_key, base_url=get_base_url(), timeout=90.0)
+        client = AsyncOpenAI(api_key=active.api_key, base_url=active.base_url, timeout=90.0)
         # xAI supports aspect_ratio via extra_body; other providers ignore this path.
         kwargs: dict[str, Any] = {
             "model": model,
             "prompt": prompt.strip(),
             "n": min(n, 4),
         }
-        if provider == "xai" and aspect_ratio and aspect_ratio != "auto":
+        if active.provider == "xai" and aspect_ratio and aspect_ratio != "auto":
             kwargs["extra_body"] = {"aspect_ratio": aspect_ratio}
         response = await client.images.generate(**kwargs)
         urls = []

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -333,7 +334,12 @@ def get_active_backend(user_id: str = "default") -> BackendEntry:
         return reg[active]
     # Last known fallback to life support.
     life = str(state.get("life_support_backend", "")).strip()
-    if life in reg and reg[life].enabled:
+    openai_fallback_allowed = os.getenv("ALLOW_OPENAI_FALLBACK", "").strip().lower() in {"1", "true", "yes"}
+    if (
+        life in reg
+        and reg[life].enabled
+        and (not life.startswith("openai/") or active.startswith("openai/") or openai_fallback_allowed)
+    ):
         state["active_backend"] = life
         save_state(state, user_id)
         return reg[life]
@@ -529,19 +535,31 @@ def _clear_unhealthy(backend_id: str, user_id: str = "default") -> None:
 def _fallback_candidates(requested_backend: str, user_id: str = "default") -> list[str]:
     st = load_state(user_id)
     reg = load_registry(user_id)
+    active_backend = str(st.get("active_backend", "")).strip()
+    openai_fallback_allowed = os.getenv("ALLOW_OPENAI_FALLBACK", "").strip().lower() in {"1", "true", "yes"}
+
+    def allowed(candidate: str) -> bool:
+        if not candidate.startswith("openai/"):
+            return True
+        return (
+            openai_fallback_allowed
+            or requested_backend.startswith("openai/")
+            or active_backend.startswith("openai/")
+        )
+
     ids: list[str] = []
     for candidate in (
         str(st.get("last_successful_backend", "")).strip(),
         str(st.get("last_known_tool_capable_backend", "")).strip(),
         str(st.get("life_support_backend", "")).strip(),
     ):
-        if candidate and candidate != requested_backend and candidate not in ids:
+        if candidate and candidate != requested_backend and candidate not in ids and allowed(candidate):
             ids.append(candidate)
     # Cheapest/most fallback-suitable tool-capable cloud choices next.
     for e in sorted(reg, key=lambda x: (x.fallback_rank, x.priority)):
         if not e.enabled or not e.supports_tools:
             continue
-        if e.id not in ids and e.id != requested_backend:
+        if e.id not in ids and e.id != requested_backend and allowed(e.id):
             ids.append(e.id)
     return ids
 
@@ -571,7 +589,21 @@ def bootstrap_backend_files(user_id: str = "default") -> None:
     active = str(st.get("active_backend", "")).strip()
     if active not in reg_ids:
         env_id = f"{get_llm_provider()}/{get_chat_model()}"
-        st["active_backend"] = env_id if env_id in reg_ids else "openai/gpt-4.1-mini"
+        if env_id in reg_ids:
+            st["active_backend"] = env_id
+        else:
+            openai_fallback_allowed = os.getenv("ALLOW_OPENAI_FALLBACK", "").strip().lower() in {"1", "true", "yes"}
+            replacement = next(
+                (
+                    e.id
+                    for e in sorted(reg, key=lambda x: (x.fallback_rank, x.priority))
+                    if e.enabled
+                    and e.supports_tools
+                    and (not e.id.startswith("openai/") or openai_fallback_allowed)
+                ),
+                "",
+            )
+            st["active_backend"] = replacement or "openai/gpt-4.1-mini"
     life = str(st.get("life_support_backend", "")).strip()
     if life not in reg_ids:
         st["life_support_backend"] = "openai/gpt-4.1-mini"

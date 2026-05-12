@@ -86,6 +86,7 @@ async def run_cloud(
     prompt_prefix: str = "",
     client=None,
     model: str = "grok-3",
+    provider: str | None = None,
 ) -> Signal:
     """
     Cloud swarm: Grok simulates multiple neurons (3 parallel perspectives, then synthesize).
@@ -93,6 +94,14 @@ async def run_cloud(
     """
     if not client:
         raise ValueError("Cloud swarm requires client")
+    if provider is None:
+        try:
+            from src import backend_switching
+
+            active = backend_switching.get_active_backend(user_id="default")
+            provider = active.provider
+        except Exception:
+            provider = "unknown"
     problem = inputs[0] if inputs else ""
     context = inputs[1] if len(inputs) > 1 else ""
     if isinstance(problem, Signal):
@@ -115,12 +124,11 @@ async def run_cloud(
             ],
         )
         try:
-            from config.settings import get_llm_provider
             from src.cost_tracking import record_openai_chat_usage
 
             record_openai_chat_usage(
                 response=r,
-                provider=get_llm_provider(),
+                provider=provider or "unknown",
                 model=model,
                 source_type="subagent",
                 task_label="swarm_cloud_perspective",
@@ -155,12 +163,11 @@ Synthesize into: 1) Summary 2) Step-by-step approach 3) Recommendations. Be dire
         ],
     )
     try:
-        from config.settings import get_llm_provider
         from src.cost_tracking import record_openai_chat_usage
 
         record_openai_chat_usage(
             response=r,
-            provider=get_llm_provider(),
+            provider=provider or "unknown",
             model=model,
             source_type="subagent",
             task_label="swarm_cloud_synthesis",

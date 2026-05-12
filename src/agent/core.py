@@ -1180,7 +1180,7 @@ class AssistiveAgent:
         self.backend_id = ""
         self.provider = ""
         self.model = ""
-        self.client = AsyncOpenAI(api_key="", base_url="https://api.openai.com/v1")
+        self.client = AsyncOpenAI(api_key="", base_url="http://127.0.0.1:9/v1")
         self.memory = MemoryStore(user_id=user_id)
         self.biology = DriveState(self.memory.user_dir)
         from src.existential_layer import ExistentialState
@@ -2212,13 +2212,18 @@ class AssistiveAgent:
                 )
                 break
             except Exception as e:
-                log_error("grok_api", e)
+                log_error(f"llm_api:{self.provider}/{self.model}", e)
                 attempts += 1
                 self._narrate(narrate_queue, f"Retry {attempts}/{max_attempts}")
                 failure = FailureEvent(
                     kind=self.doctor.diagnose(e),
                     message=str(e),
-                    context={"attempt": attempts},
+                    context={
+                        "attempt": attempts,
+                        "backend": getattr(self, "backend_id", ""),
+                        "provider": getattr(self, "provider", ""),
+                        "model": getattr(self, "model", ""),
+                    },
                 )
                 self.doctor.current_failure = failure
                 strategies = self.doctor.generate_strategies(failure)

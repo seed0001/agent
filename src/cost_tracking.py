@@ -646,6 +646,16 @@ def estimate_cost(
     )
 
 
+def _current_provider_model(user_id: str = "default") -> tuple[str, str]:
+    try:
+        from src import backend_switching
+
+        active = backend_switching.get_active_backend(user_id=user_id)
+        return active.provider, active.model
+    except Exception:
+        return get_llm_provider(), get_chat_model()
+
+
 def estimate_task_cost(
     *,
     task_type: str,
@@ -656,8 +666,9 @@ def estimate_task_cost(
     steps: int | None = None,
     user_id: str = "default",
 ) -> dict[str, Any]:
-    p = (provider or get_llm_provider()).lower()
-    m = model or get_chat_model()
+    active_provider, active_model = _current_provider_model(user_id=user_id)
+    p = (provider or active_provider).lower()
+    m = model or active_model
     n = max(1, int(steps or 1))
     est = estimate_cost(
         provider=p,
@@ -797,6 +808,7 @@ def get_cost_snapshot(
                     f"Daily budget warning: {pct:.1f}% used ({paid:.4f}/{daily_limit:.4f} {budget.get('currency','USD')})."
                 )
 
+    active_provider, active_model = _current_provider_model(user_id=user_id)
     result = {
         "period": (period or "today"),
         "paid_cost": round(paid, 6),
@@ -806,8 +818,8 @@ def get_cost_snapshot(
         "total_tokens": int(sums["total_tokens"] or 0),
         "free_local_tokens": int(sums["free_local_tokens"] or 0),
         "currency": budget.get("currency", "USD"),
-        "current_provider": get_llm_provider(),
-        "current_model": get_chat_model(),
+        "current_provider": active_provider,
+        "current_model": active_model,
         "by_model": [dict(r) for r in by_model_rows],
         "by_source_type": [dict(r) for r in by_source_rows],
         "by_task": [dict(r) for r in by_task_rows],
