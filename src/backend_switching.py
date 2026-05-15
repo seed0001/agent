@@ -12,6 +12,9 @@ import httpx
 from openai import AsyncOpenAI
 
 from config.settings import (
+    GEMINI_API_KEY,
+    GEMINI_BASE_URL,
+    GEMINI_MODEL,
     OLLAMA_API_KEY,
     OLLAMA_BASE_URL,
     OLLAMA_MODEL,
@@ -25,6 +28,9 @@ from config.settings import (
     MISTRAL_API_KEY,
     MISTRAL_BASE_URL,
     MISTRAL_MODEL,
+    ANTHROPIC_API_KEY,
+    ANTHROPIC_BASE_URL,
+    ANTHROPIC_MODEL,
     get_chat_model,
     get_llm_provider,
 )
@@ -55,6 +61,22 @@ def _state_path(user_id: str = "default") -> Path:
 
 def _audit_path(user_id: str = "default") -> Path:
     return _profile_dir(user_id) / "backend_switch_log.jsonl"
+
+
+def _local_fallback_model() -> str:
+    return os.getenv("OLLAMA_FALLBACK_MODEL", "llama3.2").strip() or "llama3.2"
+
+
+def _local_fallback_id() -> str:
+    return f"ollama/{_local_fallback_model()}"
+
+
+def _provider_fallback_order() -> list[str]:
+    raw = os.getenv(
+        "PROVIDER_FALLBACK_ORDER",
+        f"xai/grok-4.3,mistral/mistral-medium-latest,gemini/{GEMINI_MODEL},openai/gpt-4.1-mini,openai/gpt-5.5",
+    )
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 @dataclass
@@ -200,11 +222,11 @@ def _default_registry() -> list[dict[str, Any]]:
             "api_key": OPENAI_API_KEY,
         },
         {
-            "id": "anthropic/claude-haiku-4.5",
+            "id": f"anthropic/{ANTHROPIC_MODEL}",
             "provider": "anthropic",
-            "model": "claude-haiku-4.5",
-            "display_name": "Claude Haiku 4.5",
-            "enabled": False,
+            "model": ANTHROPIC_MODEL,
+            "display_name": f"Claude {ANTHROPIC_MODEL}",
+            "enabled": bool(ANTHROPIC_API_KEY),
             "priority": 60,
             "cost_tier": "low",
             "quality_tier": "medium",
@@ -214,9 +236,9 @@ def _default_registry() -> list[dict[str, Any]]:
             "context_window": 200_000,
             "api_key_env": "ANTHROPIC_API_KEY",
             "fallback_rank": 3,
-            "notes": "Optional future adapter.",
-            "base_url": "",
-            "api_key": "",
+            "notes": "Uses local JSON tools.",
+            "base_url": ANTHROPIC_BASE_URL,
+            "api_key": ANTHROPIC_API_KEY,
         },
         {
             "id": "mistral/mistral-medium-latest",
@@ -237,6 +259,7 @@ def _default_registry() -> list[dict[str, Any]]:
             "base_url": MISTRAL_BASE_URL,
             "api_key": MISTRAL_API_KEY,
         },
+        _gemini_entry_dict(),
         {
             "id": f"ollama/{OLLAMA_MODEL}",
             "provider": "ollama",
@@ -259,6 +282,66 @@ def _default_registry() -> list[dict[str, Any]]:
     ]
 
 
+def _gemini_entry_dict() -> dict[str, Any]:
+    return {
+        "id": f"gemini/{GEMINI_MODEL}",
+        "provider": "gemini",
+        "model": GEMINI_MODEL,
+        "display_name": f"Google Gemini {GEMINI_MODEL}",
+        "enabled": True,
+        "priority": 35,
+        "cost_tier": "low",
+        "quality_tier": "high",
+        "supports_tools": True,
+        "supports_vision": True,
+        "supports_reasoning": True,
+        "context_window": 1_000_000,
+        "api_key_env": "GEMINI_API_KEY",
+        "fallback_rank": 2,
+        "notes": "Google Gemini via the OpenAI-compatible API.",
+        "base_url": GEMINI_BASE_URL,
+        "api_key": GEMINI_API_KEY,
+    }
+
+
+def _local_fallback_entry_dict() -> dict[str, Any]:
+    model = _local_fallback_model()
+    return {
+        "id": f"ollama/{model}",
+        "provider": "ollama",
+        "model": model,
+        "display_name": f"Ollama {model}",
+        "enabled": True,
+        "priority": 999,
+        "cost_tier": "free",
+        "quality_tier": "survival",
+        "supports_tools": True,
+        "supports_vision": False,
+        "supports_reasoning": False,
+        "context_window": 32_000,
+        "api_key_env": "OLLAMA_API_KEY",
+        "fallback_rank": 999,
+        "notes": "Final local survival fallback. Tool calling is attempted, then degraded if unsupported.",
+        "base_url": OLLAMA_BASE_URL,
+        "api_key": OLLAMA_API_KEY,
+    }
+
+
+def _ensure_required_registry_entries(raw: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    entries = list(raw or [])
+    ids = {str(e.get("id", "")).strip() for e in entries if isinstance(e, dict)}
+    changed = False
+    gemini_entry = _gemini_entry_dict()
+    if gemini_entry["id"] not in ids:
+        entries.append(gemini_entry)
+        changed = True
+    local_entry = _local_fallback_entry_dict()
+    if local_entry["id"] not in ids:
+        entries.append(local_entry)
+        changed = True
+    return entries, changed
+
+
 def _default_state() -> dict[str, Any]:
     env_provider = get_llm_provider()
     env_model = get_chat_model()
@@ -269,7 +352,7 @@ def _default_state() -> dict[str, Any]:
         "last_known_tool_capable_backend": "openai/gpt-4.1-mini",
         "life_support_backend": "openai/gpt-4.1-mini",
         "life_support_requires_tools": True,
-        "local_fallback_backend": f"ollama/{OLLAMA_MODEL}",
+        "local_fallback_backend": _local_fallback_id(),
         "updated_at": _iso(),
         "updated_by": "bootstrap",
         "last_switch": {},
@@ -293,6 +376,9 @@ def load_registry(user_id: str = "default") -> list[BackendEntry]:
     if not p.exists():
         _write_json(p, _default_registry())
     raw = _read_json(p)
+    raw, changed = _ensure_required_registry_entries(raw if isinstance(raw, list) else [])
+    if changed:
+        _write_json(p, raw)
     return [BackendEntry.from_dict(x) for x in (raw or [])]
 
 
@@ -334,7 +420,7 @@ def get_active_backend(user_id: str = "default") -> BackendEntry:
         return reg[active]
     # Last known fallback to life support.
     life = str(state.get("life_support_backend", "")).strip()
-    openai_fallback_allowed = os.getenv("ALLOW_OPENAI_FALLBACK", "").strip().lower() in {"1", "true", "yes"}
+    openai_fallback_allowed = os.getenv("DISABLE_OPENAI_FALLBACK", "").strip().lower() not in {"1", "true", "yes"}
     if (
         life in reg
         and reg[life].enabled
@@ -391,6 +477,13 @@ def _normalize_target_aliases(target: str, user_id: str = "default") -> tuple[st
         for i in ids:
             if i.startswith("mistral/"):
                 return i, "alias_mistral"
+    if "gemini" in t or "google" in t:
+        for cand in (f"gemini/{GEMINI_MODEL}", "gemini/gemini-2.5-flash"):
+            if cand in ids:
+                return cand, "alias_gemini"
+        for i in ids:
+            if i.startswith("gemini/"):
+                return i, "alias_gemini"
 
     # Fuzzy contains
     matches = [i for i in ids if t in i.lower()]
@@ -458,6 +551,15 @@ async def health_check_backend(
                     if isinstance(m, dict)
                 }
                 if b.model not in names and not any(n.startswith(b.model + ":") for n in names):
+                    auto_pull = os.getenv("AUTO_PULL_OLLAMA_FALLBACK", "true").strip().lower() in {"1", "true", "yes"}
+                    if auto_pull and b.id == _local_fallback_id():
+                        async with httpx.AsyncClient(timeout=300.0) as pull_client:
+                            pull = await pull_client.post(
+                                f"{base}/api/pull",
+                                json={"name": b.model, "stream": False},
+                            )
+                            pull.raise_for_status()
+                        return {"healthy": True, "reason": "ok", "message": f"pulled local fallback model: {b.model}"}
                     return {
                         "healthy": False,
                         "reason": "local_model_unavailable",
@@ -478,7 +580,12 @@ async def health_check_backend(
             "message": f"{b.api_key_env} is not set.",
         }
     try:
-        client = AsyncOpenAI(api_key=b.api_key, base_url=b.base_url)
+        if b.provider == "anthropic":
+            from src.provider_adapters import AsyncAnthropicAdapter
+            client = AsyncAnthropicAdapter(api_key=b.api_key, base_url=b.base_url)
+        else:
+            client = AsyncOpenAI(api_key=b.api_key, base_url=b.base_url)
+        
         try:
             await client.chat.completions.create(
                 model=b.model,
@@ -535,8 +642,10 @@ def _clear_unhealthy(backend_id: str, user_id: str = "default") -> None:
 def _fallback_candidates(requested_backend: str, user_id: str = "default") -> list[str]:
     st = load_state(user_id)
     reg = load_registry(user_id)
+    reg_map = {e.id: e for e in reg}
     active_backend = str(st.get("active_backend", "")).strip()
-    openai_fallback_allowed = os.getenv("ALLOW_OPENAI_FALLBACK", "").strip().lower() in {"1", "true", "yes"}
+    openai_fallback_allowed = os.getenv("DISABLE_OPENAI_FALLBACK", "").strip().lower() not in {"1", "true", "yes"}
+    local_fallback = str(st.get("local_fallback_backend") or _local_fallback_id()).strip()
 
     def allowed(candidate: str) -> bool:
         if not candidate.startswith("openai/"):
@@ -548,20 +657,128 @@ def _fallback_candidates(requested_backend: str, user_id: str = "default") -> li
         )
 
     ids: list[str] = []
-    for candidate in (
+    policy_order = _provider_fallback_order()
+    state_candidates = [
         str(st.get("last_successful_backend", "")).strip(),
         str(st.get("last_known_tool_capable_backend", "")).strip(),
         str(st.get("life_support_backend", "")).strip(),
-    ):
-        if candidate and candidate != requested_backend and candidate not in ids and allowed(candidate):
+    ]
+    for candidate in policy_order + state_candidates:
+        entry = reg_map.get(candidate)
+        if (
+            candidate
+            and entry
+            and entry.enabled
+            and candidate != requested_backend
+            and candidate not in ids
+            and allowed(candidate)
+        ):
             ids.append(candidate)
     # Cheapest/most fallback-suitable tool-capable cloud choices next.
     for e in sorted(reg, key=lambda x: (x.fallback_rank, x.priority)):
-        if not e.enabled or not e.supports_tools:
+        if not e.enabled or not e.supports_tools or e.provider == "ollama":
             continue
         if e.id not in ids and e.id != requested_backend and allowed(e.id):
             ids.append(e.id)
+    if local_fallback and local_fallback != requested_backend and local_fallback not in ids:
+        ids.append(local_fallback)
     return ids
+
+
+def get_fallback_candidates(
+    failed_backend: str,
+    *,
+    exclude_backends: set[str] | None = None,
+    user_id: str = "default",
+) -> list[str]:
+    excluded = set(exclude_backends or set())
+    excluded.add(failed_backend)
+    return [candidate for candidate in _fallback_candidates(failed_backend, user_id) if candidate not in excluded]
+
+
+async def activate_fallback_backend(
+    *,
+    failed_backend: str,
+    failure_reason: str,
+    failure_message: str,
+    exclude_backends: set[str] | None = None,
+    requested_by: str = "runtime",
+    user_id: str = "default",
+) -> BackendEntry | None:
+    """Move active_backend to the next healthy provider, ending at local Ollama."""
+    state = load_state(user_id)
+    reg = _registry_map(user_id)
+    _mark_unhealthy(failed_backend, failure_reason, failure_message, user_id)
+
+    for candidate in get_fallback_candidates(
+        failed_backend,
+        exclude_backends=exclude_backends,
+        user_id=user_id,
+    ):
+        entry = reg.get(candidate)
+        if not entry or not entry.enabled:
+            continue
+        require_tools = entry.provider != "ollama"
+        health = await health_check_backend(candidate, require_tools=require_tools, user_id=user_id)
+        if not health.get("healthy"):
+            _mark_unhealthy(candidate, health.get("reason", "unknown_error"), health.get("message", ""), user_id)
+            continue
+
+        state = load_state(user_id)
+        state["active_backend"] = candidate
+        state["last_successful_backend"] = candidate
+        if entry.supports_tools:
+            state["last_known_tool_capable_backend"] = candidate
+        state["last_switch"] = {
+            "requested_target": "auto_fallback",
+            "resolved_backend": candidate,
+            "previous_backend": failed_backend,
+            "final_backend": candidate,
+            "success": True,
+            "fallback_used": True,
+            "failure_reason": failure_reason,
+            "reason": failure_message[:300],
+            "mode": "runtime_failover",
+            "at": _iso(),
+        }
+        state["updated_by"] = requested_by
+        save_state(state, user_id)
+        _clear_unhealthy(candidate, user_id)
+        append_audit(
+            {
+                "timestamp": _iso(),
+                "requested_by": requested_by,
+                "requested_target": "auto_fallback",
+                "resolved_backend": candidate,
+                "previous_backend": failed_backend,
+                "final_backend": candidate,
+                "success": True,
+                "fallback_used": True,
+                "failure_reason": failure_reason,
+                "tool_capable_final_backend": entry.supports_tools,
+                "message": f"Runtime failover from {failed_backend} to {candidate}: {failure_reason}",
+            },
+            user_id,
+        )
+        return entry
+
+    append_audit(
+        {
+            "timestamp": _iso(),
+            "requested_by": requested_by,
+            "requested_target": "auto_fallback",
+            "resolved_backend": None,
+            "previous_backend": failed_backend,
+            "final_backend": failed_backend,
+            "success": False,
+            "fallback_used": False,
+            "failure_reason": failure_reason,
+            "tool_capable_final_backend": bool(reg.get(failed_backend).supports_tools if reg.get(failed_backend) else False),
+            "message": f"No fallback backend passed health checks after {failed_backend}: {failure_message[:300]}",
+        },
+        user_id,
+    )
+    return None
 
 
 def ensure_life_support_valid_or_raise(user_id: str = "default") -> None:
@@ -586,13 +803,16 @@ def bootstrap_backend_files(user_id: str = "default") -> None:
     reg = load_registry(user_id)
     st = load_state(user_id)
     reg_ids = {e.id for e in reg}
+    local_id = _local_fallback_id()
+    if local_id in reg_ids:
+        st["local_fallback_backend"] = local_id
     active = str(st.get("active_backend", "")).strip()
     if active not in reg_ids:
         env_id = f"{get_llm_provider()}/{get_chat_model()}"
         if env_id in reg_ids:
             st["active_backend"] = env_id
         else:
-            openai_fallback_allowed = os.getenv("ALLOW_OPENAI_FALLBACK", "").strip().lower() in {"1", "true", "yes"}
+            openai_fallback_allowed = os.getenv("DISABLE_OPENAI_FALLBACK", "").strip().lower() not in {"1", "true", "yes"}
             replacement = next(
                 (
                     e.id

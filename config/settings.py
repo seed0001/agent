@@ -47,6 +47,16 @@ MISTRAL_BASE_URL = os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1")
 MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-medium-latest")
 MISTRAL_IMAGE_MODEL = os.getenv("MISTRAL_IMAGE_MODEL", "")
 
+# Google Gemini (OpenAI-compatible API)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
+GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# Anthropic
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+
 # Ollama local models (OpenAI-compatible API at /v1)
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "ollama")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
@@ -57,8 +67,8 @@ XAI_IMAGE_MODEL = os.getenv("XAI_IMAGE_MODEL", "grok-imagine-image")
 
 
 def get_llm_provider() -> str:
-    """Return normalized provider name: 'xai', 'openai', 'mistral', or 'ollama'."""
-    if LLM_PROVIDER in {"openai", "mistral", "ollama"}:
+    """Return normalized provider name: 'xai', 'openai', 'mistral', 'gemini', 'ollama', or 'anthropic'."""
+    if LLM_PROVIDER in {"openai", "mistral", "gemini", "ollama", "anthropic"}:
         return LLM_PROVIDER
     return "xai"
 
@@ -70,8 +80,12 @@ def get_chat_model() -> str:
         return OPENAI_MODEL
     if provider == "mistral":
         return MISTRAL_MODEL
+    if provider == "gemini":
+        return GEMINI_MODEL
     if provider == "ollama":
         return OLLAMA_MODEL
+    if provider == "anthropic":
+        return ANTHROPIC_MODEL
     return XAI_MODEL
 
 
@@ -82,8 +96,12 @@ def get_api_key() -> str:
         return OPENAI_API_KEY
     if provider == "mistral":
         return MISTRAL_API_KEY
+    if provider == "gemini":
+        return GEMINI_API_KEY
     if provider == "ollama":
         return OLLAMA_API_KEY
+    if provider == "anthropic":
+        return ANTHROPIC_API_KEY
     return XAI_API_KEY
 
 
@@ -94,8 +112,12 @@ def get_base_url() -> str:
         return OPENAI_BASE_URL
     if provider == "mistral":
         return MISTRAL_BASE_URL
+    if provider == "gemini":
+        return GEMINI_BASE_URL
     if provider == "ollama":
         return OLLAMA_BASE_URL
+    if provider == "anthropic":
+        return ANTHROPIC_BASE_URL
     return XAI_BASE_URL
 
 
@@ -106,8 +128,12 @@ def get_api_key_env_name() -> str:
         return "OPENAI_API_KEY"
     if provider == "mistral":
         return "MISTRAL_API_KEY"
+    if provider == "gemini":
+        return "GEMINI_API_KEY"
     if provider == "ollama":
         return "OLLAMA_API_KEY"
+    if provider == "anthropic":
+        return "ANTHROPIC_API_KEY"
     return "XAI_API_KEY"
 
 

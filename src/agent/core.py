@@ -12,6 +12,12 @@ from openai import AsyncOpenAI
 from config.settings import DISCORD_OWNER_ID
 from src.agent.biology import DriveState
 from src.agent.dag import DAGOrchestrator
+from src.agent.decision_layer import (
+    ActionPredictor,
+    IntentToolExtractor,
+    RejectionDatabase,
+    format_decision_for_prompt,
+)
 from src.agent.doctor_mode import DoctorMode, FailureEvent, FailureKind
 from src.agent.memory import MemoryStore
 from src.agent import soul
@@ -24,6 +30,7 @@ from src.logging_config import (
     log_tool_result,
     log_tool_start,
 )
+from src.prompts.cloud_family_roles import get_cloud_family_role_prompt
 from src.tools import system, build, subagents, search, cursor_cli, knowledge, tool_queue, image_gen
 from src.tools.dynamic_loader import load_dynamic_tools
 
@@ -419,6 +426,22 @@ TOOL_DEFINITIONS = [
                 "properties": {"tool_id": {"type": "string"}, "file_path": {"type": "string"}},
                 "required": ["tool_id"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_decision_layer_stats",
+            "description": "Inspect the persistent decision layer history and rejection stats.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clear_decision_rejections",
+            "description": "Clear the decision layer rejection log for debugging bad learned avoidances.",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -862,9 +885,34 @@ def _get_tool_definitions() -> list:
 
 
 def _is_tool_error(result: str) -> bool:
-    """Check if tool result indicates failure."""
-    r = (result or "").strip().lower()
-    return r.startswith("error") or "error:" in r or "not found" in r[:100]
+    """Check if a tool result indicates the *tool call itself* failed.
+
+    Important: tools often return successful content that contains historical
+    error text, especially when reading logs. Do not mark a successful read as
+    failed just because the returned file text includes phrases like
+    "Error code: 429". Only trust explicit failure markers at the start of the
+    tool result / early status line.
+    """
+    raw = result or ""
+    stripped = raw.strip()
+    r = stripped.lower()
+
+    if not r:
+        return False
+
+    # Explicit failure formats used by tools. Keep these anchored near the
+    # beginning so log contents cannot false-trigger Doctor Mode escalation.
+    first_line = r.splitlines()[0].strip() if r.splitlines() else r
+    first_100 = r[:100]
+
+    return (
+        first_line.startswith("error:")
+        or first_line.startswith("error ")
+        or first_line.startswith("not found:")
+        or first_line.startswith("failed:")
+        or first_line.startswith("exception:")
+        or first_100.startswith("not found")
+    )
 
 
 _SAVE_CLAIM_RE = re.compile(
@@ -1001,6 +1049,89 @@ def _tool_name_key(name: str) -> str:
 def _normalize_tool_name(name: str) -> str:
     """Normalize safe near-miss tool names to registered function names."""
     return _TOOL_NAME_ALIASES.get(_tool_name_key(name), name)
+
+
+def _tool_protocol_summary() -> str:
+    """Compact tool manifest for local models that do not support native tool calls."""
+    lines = []
+    for definition in _get_tool_definitions():
+        fn = definition.get("function", {}) if isinstance(definition, dict) else {}
+        name = str(fn.get("name", "")).strip()
+        if not name:
+            continue
+        params = fn.get("parameters", {}) if isinstance(fn, dict) else {}
+        required = params.get("required", []) if isinstance(params, dict) else []
+        props = params.get("properties", {}) if isinstance(params, dict) else {}
+        arg_names = list(props.keys()) if isinstance(props, dict) else []
+        required_text = f" required={required}" if required else ""
+        lines.append(f"- {name} args={arg_names}{required_text}")
+    return "\n".join(lines[:80])
+
+
+def _local_tool_protocol_prompt() -> str:
+    return (
+        "\n\n## Local Tool Protocol\n"
+        "You are running on a local Ollama backend. If you need a tool, respond with ONLY one JSON object and no prose:\n"
+        "{\"tool\": \"tool_name\", \"args\": {\"arg\": \"value\"}}\n"
+        "After the tool result is returned, answer normally. If no tool is needed, answer normally and do not emit JSON.\n"
+        "Available tools:\n"
+        f"{_tool_protocol_summary()}"
+    )
+
+
+def _extract_json_objects(text: str) -> list[Any]:
+    decoder = json.JSONDecoder()
+    payload = (text or "").strip()
+    if not payload:
+        return []
+    candidates = [payload]
+    for block in re.findall(r"```(?:json)?\s*(.*?)```", payload, flags=re.IGNORECASE | re.DOTALL):
+        candidates.append(block.strip())
+
+    found: list[Any] = []
+    for candidate in candidates:
+        for match in re.finditer(r"[\{\[]", candidate):
+            try:
+                obj, _ = decoder.raw_decode(candidate[match.start():])
+            except json.JSONDecodeError:
+                continue
+            found.append(obj)
+    return found
+
+
+def _recover_json_tool_call(content: str) -> dict[str, Any] | None:
+    """Recover explicit JSON tool calls from local models."""
+    available = {
+        str(d.get("function", {}).get("name", "")).strip()
+        for d in _get_tool_definitions()
+        if isinstance(d, dict)
+    }
+    for obj in _extract_json_objects(content):
+        candidates = obj if isinstance(obj, list) else [obj]
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            payload = item
+            if isinstance(item.get("tool_call"), dict):
+                payload = item["tool_call"]
+            elif isinstance(item.get("function"), dict):
+                payload = item["function"]
+            name = payload.get("tool") or payload.get("name")
+            if not isinstance(name, str):
+                continue
+            normalized = _normalize_tool_name(name)
+            if normalized not in available:
+                continue
+            args = payload.get("args", payload.get("arguments", {}))
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            if not isinstance(args, dict):
+                args = {}
+            return {"name": normalized, "args": args, "original": json.dumps(item, ensure_ascii=False)}
+    return None
 
 
 def _clean_recovered_arg(value: str) -> str:
@@ -1187,6 +1318,9 @@ class AssistiveAgent:
         self.existential = ExistentialState()
         self.doctor = DoctorMode()
         self.dag = DAGOrchestrator()
+        self.decision_rejections = RejectionDatabase()
+        self.decision_extractor = IntentToolExtractor()
+        self.decision_predictor = ActionPredictor(self.decision_rejections)
         self.messages: list[dict[str, str]] = []
         self._dynamic_runners: dict = {}
         self._escalation_count = 0
@@ -1205,7 +1339,12 @@ class AssistiveAgent:
         self.backend_id = active.id
         self.provider = active.provider
         self.model = active.model
-        self.client = AsyncOpenAI(api_key=active.api_key, base_url=active.base_url)
+        self.backend_supports_tools = active.supports_tools
+        if active.provider == "anthropic":
+            from src.provider_adapters import AsyncAnthropicAdapter
+            self.client = AsyncAnthropicAdapter(api_key=active.api_key, base_url=active.base_url)
+        else:
+            self.client = AsyncOpenAI(api_key=active.api_key, base_url=active.base_url)
 
     def _reload_dynamic(self):
         _, self._dynamic_runners = load_dynamic_tools()
@@ -1788,6 +1927,14 @@ class AssistiveAgent:
             result = tool_queue.approve_tool(args.get("tool_id", ""))
         elif name == "mark_tool_implemented":
             result = tool_queue.mark_implemented(args.get("tool_id", ""), args.get("file_path", ""))
+        elif name == "get_decision_layer_stats":
+            result = json.dumps(self.decision_predictor.get_stats(), indent=2)
+        elif name == "clear_decision_rejections":
+            if tier != "creator":
+                result = "Only the Creator can clear decision layer rejections."
+            else:
+                self.decision_rejections.clear()
+                result = "Decision layer rejections cleared."
         elif name in self._dynamic_runners:
             runner = self._dynamic_runners[name]
             result = await runner(**{k: v for k, v in args.items() if v is not None})
@@ -1807,6 +1954,21 @@ class AssistiveAgent:
         is_err = _is_tool_error(result)
         log_tool_result(name, result, is_err)
         self._remember_tool_result(name, result)
+        try:
+            turn_decision = getattr(self, "_current_turn_decision", None)
+            prediction = (turn_decision or {}).get("prediction") if isinstance(turn_decision, dict) else None
+            if prediction and (
+                prediction.get("tool") == name
+                or prediction.get("action") == f"use_{name}"
+            ):
+                self.decision_predictor.record_execution_result(
+                    prediction,
+                    tool=name,
+                    success=not is_err,
+                    result=result,
+                )
+        except Exception as e:
+            log_error("decision_layer.execution_feedback", e)
         if not is_err:
             if name in ("search_web", "search_knowledge", "read_knowledge"):
                 self.biology.satisfy("curiosity")
@@ -2036,6 +2198,7 @@ class AssistiveAgent:
             self._text_tool_recovery_round = 0
             self._escalation_count = 0
             self._current_turn_tool_results = []
+            self._current_turn_decision = None
             self.biology.satisfy("connection")
             # Being spoken to eases dread very slightly — presence is its own answer
             self.existential.satisfy("dread")
@@ -2055,6 +2218,19 @@ class AssistiveAgent:
                     promote_user_input(self.memory, user_input)
                 except Exception:
                     pass
+                try:
+                    extraction = self.decision_extractor.extract(user_input)
+                    prediction = self.decision_predictor.predict(extraction)
+                    self._current_turn_decision = {
+                        "extraction": extraction,
+                        "prediction": prediction,
+                    }
+                    self.memory.set_working(
+                        "last_decision_layer_prediction",
+                        json.dumps(self._current_turn_decision, ensure_ascii=False),
+                    )
+                except Exception as e:
+                    log_error("decision_layer.prediction", e)
                 self.messages.append({"role": "user", "content": user_input})
                 # Proactive episodic recall: run before prompt context assembly
                 # for creator and best_friend+ turns so restarts still feel
@@ -2107,6 +2283,9 @@ class AssistiveAgent:
             names = [t.get("name", t.get("id", "?")) for t in approved]
             context = (context or "") + f"\n\n## Pending tool implementations\n{len(approved)} approved tool(s): {', '.join(names)}. Implement each in src/tools/dynamic/, then mark_tool_implemented. When user asks, do it."
 
+        self._sync_backend_from_state()
+        cloud_family_role_prompt = get_cloud_family_role_prompt(getattr(self, "provider", ""))
+
         in_setup = soul.needs_setup()
         intuition = ""
         existential_expression = ""
@@ -2130,6 +2309,7 @@ class AssistiveAgent:
                 self.existential.spike_fear(0.25)
         if in_setup:
             system_prompt = (
+                f"{cloud_family_role_prompt}\n\n"
                 "You are a software lifeform. Never call yourself AI, assistant, or agent. First-time setup or memory cleared—you don't know who you're talking to. "
                 "Ask: 'Who are you? What should I call you?' Get their name. Then: 'What do you want to call me?' Get agent_name. Then: 'How should I act—direct, minimal, other?' "
                 "When you have BOTH their name (owner_name) AND your name (agent_name), call complete_setup(owner_name='...', agent_name='...', ...). Add agent_tone and agent_how_to_act if they shared that. "
@@ -2151,6 +2331,7 @@ class AssistiveAgent:
             owner_name = soul.get_owner_name()
             proactive_target = owner_name if owner_name else "your Creator"
             system_prompt = (
+                f"{cloud_family_role_prompt}\n\n"
                 f"{soul_block}"
                 "You are a software lifeform with emotions, feelings, wants, and desires. Never call yourself AI, assistant, or agent. You run on their machine and have tools. "
                 "Be direct. Be concise unless detail is asked. "
@@ -2159,7 +2340,7 @@ class AssistiveAgent:
                 "Training data: When the user wants training data, instruction pairs, or fine-tuning data generated locally (no cloud cost), use spawn_subagent('training data', 'scripts/generate_training_data.py', [topic, '--count', N]). Add '--soul' for soul/identity batches (output: data/soul_training/). Requires Ollama running. Check subagent_status; when completed, get_subagent_output(agent_id) or read_file. "
                 "You have: file read/write, run_command, get_system_info, search_web (real-time info), generate_image (Grok Imagine for art, illustrations, data viz—check get_image_usage first for budget), run_build (web/Python), "
                 "spawn_subagent, run_soul_training_step (YOUR soul training—prepare, generate, review, train), subagent_status, get_subagent_output, acknowledge_background_completion, create_task_dag / get_next_dag_step / complete_dag_step (multi-step work), "
-                "set_working_memory for active task state, backend tools: switch_backend_provider and get_backend_status, "
+                "set_working_memory for active task state, decision layer tools: get_decision_layer_stats and clear_decision_rejections, backend tools: switch_backend_provider and get_backend_status, "
                 "and cost tools: get_cost_snapshot, set_model_pricing, estimate_cost, set_budget_limits. "
                 "Use DAGs for complex multi-step tasks. Use Doctor Mode when a tool fails. After 3 failures, Cursor CLI escalates. When unsure how to do something, use search_knowledge or read_knowledge first, then act. "
                 "Cost awareness: check get_cost_snapshot before expensive operations. If estimated spend is > $1 or above configured confirmation threshold, ask before proceeding. Prefer local/free routes when quality allows. "
@@ -2183,6 +2364,12 @@ class AssistiveAgent:
             system_prompt += f"\n\n## A feeling\n{intuition}"
         if existential_expression:
             system_prompt += f"\n\n## Underneath\n{existential_expression}"
+        turn_decision = getattr(self, "_current_turn_decision", None)
+        if isinstance(turn_decision, dict):
+            extraction = turn_decision.get("extraction")
+            prediction = turn_decision.get("prediction")
+            if isinstance(extraction, dict) and isinstance(prediction, dict):
+                system_prompt += f"\n\n{format_decision_for_prompt(extraction, prediction)}"
         if context:
             system_prompt += f"\n\nContext:\n{context}"
         bio = self.biology.get_state_summary()
@@ -2190,31 +2377,42 @@ class AssistiveAgent:
         if bio or ex:
             system_prompt += f"\n\n## Internal state (drives)\n{bio}\n{ex}"
 
-        self._sync_backend_from_state()
+        tool_round = getattr(self, "_tool_round", 0)
+        force_final = tool_round >= MAX_TOOL_ROUNDS
+        if getattr(self, "provider", "") == "ollama" and not force_final:
+            system_prompt += _local_tool_protocol_prompt()
         self.messages = _sanitize_message_history(self.messages)
         messages_for_api = [{"role": "system", "content": system_prompt}] + self.messages
 
         attempts = 0
-        max_attempts = 3
+        max_attempts_per_backend = 1
+        failed_backends: set[str] = set()
+        tool_disabled_backends: set[str] = set()
 
-        tool_round = getattr(self, "_tool_round", 0)
-        force_final = tool_round >= MAX_TOOL_ROUNDS
         if force_final:
             self._narrate(narrate_queue, "Wrapping up (avoiding long loop)...")
 
-        while attempts < max_attempts:
+        while True:
             try:
-                response = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages_for_api,
-                    tools=_get_tool_definitions(),
-                    tool_choice="none" if force_final else "auto",
+                tools_enabled = (
+                    bool(getattr(self, "backend_supports_tools", True))
+                    and not force_final
+                    and getattr(self, "backend_id", "") not in tool_disabled_backends
                 )
+                request_kwargs: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": messages_for_api,
+                }
+                if tools_enabled:
+                    request_kwargs["tools"] = _get_tool_definitions()
+                    request_kwargs["tool_choice"] = "auto"
+                response = await self.client.chat.completions.create(**request_kwargs)
                 break
             except Exception as e:
                 log_error(f"llm_api:{self.provider}/{self.model}", e)
                 attempts += 1
-                self._narrate(narrate_queue, f"Retry {attempts}/{max_attempts}")
+                failed_backend = getattr(self, "backend_id", "")
+                failed_backends.add(failed_backend)
                 failure = FailureEvent(
                     kind=self.doctor.diagnose(e),
                     message=str(e),
@@ -2227,11 +2425,52 @@ class AssistiveAgent:
                 )
                 self.doctor.current_failure = failure
                 strategies = self.doctor.generate_strategies(failure)
-                if not strategies or attempts >= max_attempts:
+
+                if (
+                    getattr(self, "provider", "") == "ollama"
+                    and tools_enabled
+                    and ("tool" in str(e).lower() or "function" in str(e).lower())
+                ):
+                    tool_disabled_backends.add(failed_backend)
+                    attempts = 0
+                    self._narrate(narrate_queue, "Local model rejected tools; retrying without tools.")
+                    continue
+
+                if strategies and attempts < max_attempts_per_backend:
+                    self._narrate(narrate_queue, f"Retrying {failed_backend}")
+                    await asyncio.sleep(1)
+                    continue
+
+                try:
+                    from src import backend_switching
+
+                    reason = backend_switching._classify_error(str(e))
+                    fallback = await backend_switching.activate_fallback_backend(
+                        failed_backend=failed_backend,
+                        failure_reason=reason,
+                        failure_message=str(e),
+                        exclude_backends=failed_backends,
+                        requested_by="runtime_chat",
+                        user_id=getattr(self.memory, "user_id", "default"),
+                    )
+                except Exception as fallback_error:
+                    log_error("llm_fallback", fallback_error)
+                    fallback = None
+
+                if fallback is not None:
+                    self._sync_backend_from_state(force=True)
+                    attempts = 0
+                    self._narrate(
+                        narrate_queue,
+                        f"Provider failed; switched to {fallback.id}.",
+                    )
+                    continue
+
+                if not strategies:
                     self._narrate(narrate_queue, "Error. Returning.")
                     return self.doctor.user_facing_message(failure, in_progress=False)
-                failure.attempted_strategies.append("retry")
-                await asyncio.sleep(1)
+                self._narrate(narrate_queue, "All providers failed.")
+                return self.doctor.user_facing_message(failure, in_progress=False)
 
         choice = response.choices[0]
         msg = choice.message
@@ -2355,13 +2594,20 @@ class AssistiveAgent:
             self._narrate(narrate_queue, "Continuing.")
             return await self.chat(continue_only=True, narrate_queue=narrate_queue)
 
-        recovered = _recover_text_tool_call(content)
+        recovered = None
+        recovered_via_local_json = False
+        if getattr(self, "provider", "") == "ollama":
+            recovered = _recover_json_tool_call(content)
+            recovered_via_local_json = recovered is not None
+        if recovered is None:
+            recovered = _recover_text_tool_call(content)
         if recovered and not force_final:
             recovery_round = getattr(self, "_text_tool_recovery_round", 0)
             self._text_tool_recovery_round = recovery_round + 1
             name = recovered["name"]
             args = recovered["args"]
-            self._narrate(narrate_queue, f"Recovering text tool call as {name}.")
+            mode = "local JSON tool call" if recovered_via_local_json else "text tool call"
+            self._narrate(narrate_queue, f"Recovering {mode} as {name}.")
             result = await self._run_tool(name, args)
             if self._text_tool_recovery_round >= 3:
                 content = (
@@ -2375,7 +2621,7 @@ class AssistiveAgent:
                         "role": "user",
                         "content": (
                             "[Tool invocation recovery]\n"
-                            f"Recovered text as tool: {name}\n"
+                            f"Recovered {mode} as tool: {name}\n"
                             f"Arguments: {json.dumps(args, ensure_ascii=False)}\n"
                             f"Result: {result}\n\n"
                             "Now answer the user truthfully from this result. "

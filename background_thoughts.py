@@ -252,6 +252,47 @@ def _build_user_prompt(profile_facts: str, recent: list[str], retry_reason: str 
 
 
 async def _generate(client: AsyncOpenAI, model: str, system: str, user: str) -> str:
+    from config.settings import get_llm_provider
+    provider = get_llm_provider()
+
+    if provider == "anthropic":
+        from anthropic import AsyncAnthropic
+        from config.settings import get_api_key, get_base_url
+        anthropic_client = AsyncAnthropic(api_key=get_api_key(), base_url=get_base_url())
+        response = await anthropic_client.messages.create(
+            model=model,
+            max_tokens=256,
+            system=system,
+            messages=[
+                {"role": "user", "content": user}
+            ]
+        )
+        output_text = (response.content[0].text or "").strip()
+        
+        try:
+            from src.cost_tracking import record_openai_chat_usage
+            class MockMessage:
+                content = output_text
+            class MockChoice:
+                message = MockMessage()
+            class MockResponse:
+                choices = [MockChoice()]
+                usage = None
+            record_openai_chat_usage(
+                response=MockResponse(),
+                provider=provider,
+                model=model,
+                source_type="background",
+                task_label="background_thoughts",
+                fallback_prompt_text=f"{system}\n\n{user}",
+                fallback_output_text=output_text,
+                metadata={"component": "background_thoughts"},
+                user_id="default",
+            )
+        except Exception:
+            pass
+        return output_text
+
     response = await client.chat.completions.create(
         model=model,
         messages=[
@@ -260,12 +301,11 @@ async def _generate(client: AsyncOpenAI, model: str, system: str, user: str) -> 
         ],
     )
     try:
-        from config.settings import get_llm_provider
         from src.cost_tracking import record_openai_chat_usage
 
         record_openai_chat_usage(
             response=response,
-            provider=get_llm_provider(),
+            provider=provider,
             model=model,
             source_type="background",
             task_label="background_thoughts",

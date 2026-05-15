@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from src.tools.training_env import env_for_child
+
 
 def _resolve(path: str) -> Path:
     """Expand ``~`` and resolve to an absolute path.
@@ -224,6 +226,7 @@ async def run_command(cmd: str, cwd: str | None = None, timeout: int = 60) -> st
             cwd=cwd or os.getcwd(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env_for_child(cmd),
         )
         out_bytes, err_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         out = (out_bytes or b"").decode("utf-8", errors="replace").strip()

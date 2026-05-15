@@ -1,5 +1,12 @@
-# Soul training: TinyLlama fine-tuning
+# Soul training: LoRA fine-tuning
 # pip install -r requirements-soul.txt
+#
+# GPU note:
+# - This generic file installs whatever torch build pip resolves for your platform.
+# - For AMD GPU training, install the ROCm torch build from:
+#   https://pytorch.org/get-started/locally/
+# - Then verify with:
+#   python scripts/check_training_device.py
 transformers>=4.36.0
 peft>=0.7.0
 datasets>=2.16.0

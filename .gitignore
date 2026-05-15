@@ -12,6 +12,12 @@ venv/
 # Personal user content (Travis's schedule, Andrew's journey notes, bug reports, etc.)
 projects/
 project_folder/
+organized/
+claude/
+memory-core/
+models/
+huggingface/
+adapters/
 
 # Vendored third-party code with its own .git history
 vendor/

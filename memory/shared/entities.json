@@ -1,0 +1,16 @@
+{
+  "entities": [
+    {
+      "name": "Andrew",
+      "location": "Desktop - Gaming Rig",
+      "role": "Training and model work",
+      "memory_path": "memory/andrew/"
+    },
+    {
+      "name": "Nova",
+      "location": "Laptop",
+      "role": "Historical records and context",
+      "memory_path": "memory/nova/"
+    }
+  ]
+}

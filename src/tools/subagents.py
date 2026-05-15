@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from config.settings import PROJECT_ROOT
+from src.tools.training_env import env_for_child, script_command
 
 # Set by app on startup: called when a subagent completes (aid, task, status)
 _completion_callback: Callable[[str, str, str], None] | None = None
@@ -56,8 +57,7 @@ class SubAgentManager:
             p = PROJECT_ROOT / script_path
         resolved = str(p.resolve())
         import os
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
+        env = env_for_child(script_command(resolved, args), os.environ.copy())
         try:
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, resolved, *args,

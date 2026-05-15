@@ -29,10 +29,10 @@ DEFAULT_GUILD_ID = 1469648303862841376  # Good Vibes
 TOOL_DEF = {
     "name": "manage_discord_server",
     "description": (
-        "Manage Discord server structure for the Creator: list roles/members, "
+        "Manage Discord server structure for the Creator: list visible guilds, roles/members, "
         "create/edit/delete channels and categories, create/edit/delete roles, "
         "assign/remove roles, set channel permissions, and kick members. "
-        "Destructive actions require confirm=true. Defaults to Good Vibes guild."
+        "Destructive actions require confirm=true. Per-guild actions default to Good Vibes guild."
     ),
     "parameters": {
         "type": "object",
@@ -40,6 +40,7 @@ TOOL_DEF = {
             "action": {
                 "type": "string",
                 "enum": [
+                    "list_guilds",
                     "list_roles", "list_members", "list_channels",
                     "create_channel", "edit_channel", "delete_channel",
                     "create_category", "delete_category",
@@ -49,7 +50,7 @@ TOOL_DEF = {
                 ],
                 "description": "Discord management action to perform.",
             },
-            "guild_id": {"type": "string", "description": "Discord guild/server ID. Defaults to Good Vibes."},
+            "guild_id": {"type": "string", "description": "Discord guild/server ID. Defaults to Good Vibes for per-guild actions."},
             "channel_id": {"type": "string", "description": "Target channel ID."},
             "channel_name": {"type": "string", "description": "Channel name for create/edit/find."},
             "channel_type": {"type": "string", "enum": ["text", "voice"], "description": "Channel type for create_channel. Default text."},
@@ -163,7 +164,10 @@ async def _run_discord_action(**kwargs: Any) -> str:
         return "Discord manager error: DISCORD_BOT_TOKEN is not set."
 
     action = kwargs.get("action")
-    guild_id = _as_int(kwargs.get("guild_id") or DEFAULT_GUILD_ID, "guild_id", True)
+    if action == "list_guilds":
+        guild_id = None
+    else:
+        guild_id = _as_int(kwargs.get("guild_id") or DEFAULT_GUILD_ID, "guild_id", True)
     confirm = bool(kwargs.get("confirm", False))
 
     destructive = {"delete_channel", "delete_category", "delete_role", "kick_member"}
@@ -185,6 +189,19 @@ async def _run_discord_action(**kwargs: Any) -> str:
     @client.event
     async def on_ready():  # type: ignore
         try:
+            if action == "list_guilds":
+                lines = [
+                    f"Discord bot: {client.user} id={getattr(client.user, 'id', 'unknown')}",
+                    f"Visible guilds: {len(client.guilds)}",
+                ]
+                for guild in sorted(client.guilds, key=lambda g: g.name.lower()):
+                    lines.append(
+                        f"- {guild.name} id={guild.id} channels={len(guild.channels)} "
+                        f"members={getattr(guild, 'member_count', 'unknown')}"
+                    )
+                await finish("\n".join(lines))
+                return
+
             guild = client.get_guild(guild_id)
             if not guild:
                 await finish(f"Guild not found: {guild_id}")
