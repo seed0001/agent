@@ -33,6 +33,7 @@ from src.logging_config import (
 from src.prompts.cloud_family_roles import get_cloud_family_role_prompt
 from src.tools import system, build, subagents, search, cursor_cli, knowledge, tool_queue, image_gen
 from src.tools.dynamic_loader import load_dynamic_tools
+from src.tools.dynamic.tool_monitor import run_with_monitoring
 
 # Lazy sub-agent manager
 _subagent_manager: subagents.SubAgentManager | None = None
@@ -2535,7 +2536,7 @@ class AssistiveAgent:
                     args = {}
                 self._narrate_tool(narrate_queue, name, args)
                 try:
-                    result = await self._run_tool(name, args)
+                    result = await run_with_monitoring(self._run_tool, name, args, self.messages, user_input or '')
                 except Exception as e:
                     # Never leave an unmatched tool_call without a tool result.
                     # Return a structured error so message ordering stays valid.
@@ -2608,7 +2609,7 @@ class AssistiveAgent:
             args = recovered["args"]
             mode = "local JSON tool call" if recovered_via_local_json else "text tool call"
             self._narrate(narrate_queue, f"Recovering {mode} as {name}.")
-            result = await self._run_tool(name, args)
+            result = await run_with_monitoring(self._run_tool, name, args, self.messages, user_input or '')
             if self._text_tool_recovery_round >= 3:
                 content = (
                     f"I recovered an attempted {name} call from text and ran it.\n\n"

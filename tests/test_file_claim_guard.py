@@ -24,7 +24,7 @@ def test_file_claim_guard_corrects_no_same_turn_write_even_if_file_exists(tmp_pa
     guarded = _guard_unverified_file_claims(content, [])
 
     assert "Correction:" in guarded
-    assert "did not create or verify it in this turn" in guarded
+    assert "so I should not claim that I just saved or created the file" in guarded
 
 
 def test_file_claim_guard_allows_verified_write(tmp_path):
